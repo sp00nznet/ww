@@ -1,0 +1,640 @@
+// =============================================================================
+// PowerPC to C Static Recompiler
+// The magic: translates each PPC instruction into a C expression that
+// operates on a PPCContext struct. The generated C code compiles with
+// any modern C compiler and runs natively on x86-64.
+//
+// Example:
+//   addi r3, r4, 0x20  ->  ctx->r[3] = (int32_t)ctx->r[4] + 0x20;
+//   lwz r5, 0x10(r6)   ->  ctx->r[5] = MEM_READ32(ctx->r[6] + 0x10);
+//   bl func_80123456    ->  func_80123456(ctx, mem);
+// =============================================================================
+
+#include "ww/ppc_to_c.h"
+#include <cstdio>
+#include <cstdarg>
+#include <string>
+#include <vector>
+#include <set>
+#include <map>
+
+namespace ww {
+
+    void PPCToCEmitter::emit(const char* fmt, ...) {
+        for (int i = 0; i < indent_level; i++) fprintf(out, "    ");
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(out, fmt, args);
+        va_end(args);
+        fprintf(out, "\n");
+    }
+
+    void PPCToCEmitter::emit_raw(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(out, fmt, args);
+        va_end(args);
+    }
+
+    void PPCToCEmitter::emit_insn(const PPCInsn& insn) {
+        // Comment with original instruction
+        emit("// 0x%08X: %s", insn.address, insn.mnemonic.c_str());
+
+        switch (insn.type) {
+        // ==== Integer Arithmetic ====
+        case PPCInsnType::ADDI:
+            if (insn.ra == 0)
+                emit("ctx->r[%u] = 0x%X;", insn.rd, (uint32_t)(int32_t)insn.simm);
+            else
+                emit("ctx->r[%u] = (int32_t)ctx->r[%u] + %d;", insn.rd, insn.ra, insn.simm);
+            break;
+
+        case PPCInsnType::ADDIS:
+            if (insn.ra == 0)
+                emit("ctx->r[%u] = 0x%X;", insn.rd, (uint32_t)((int32_t)insn.simm << 16));
+            else
+                emit("ctx->r[%u] = (int32_t)ctx->r[%u] + 0x%X;", insn.rd, insn.ra, (uint32_t)((int32_t)insn.simm << 16));
+            break;
+
+        case PPCInsnType::ADD:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u];", insn.rd, insn.ra, insn.rb);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.rd);
+            break;
+
+        case PPCInsnType::ADDC:
+            emit("{ uint64_t t = (uint64_t)ctx->r[%u] + (uint64_t)ctx->r[%u]; ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }",
+                 insn.ra, insn.rb, insn.rd);
+            break;
+
+        case PPCInsnType::ADDE:
+            emit("{ uint64_t t = (uint64_t)ctx->r[%u] + (uint64_t)ctx->r[%u] + ctx->xer_ca(); ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }",
+                 insn.ra, insn.rb, insn.rd);
+            break;
+
+        case PPCInsnType::ADDZE:
+            emit("{ uint64_t t = (uint64_t)ctx->r[%u] + ctx->xer_ca(); ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }",
+                 insn.ra, insn.rd);
+            break;
+
+        case PPCInsnType::SUBF:
+            emit("ctx->r[%u] = ctx->r[%u] - ctx->r[%u];", insn.rd, insn.rb, insn.ra);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.rd);
+            break;
+
+        case PPCInsnType::SUBFC:
+            emit("{ uint64_t t = (uint64_t)ctx->r[%u] - (uint64_t)ctx->r[%u]; ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(!(t >> 32)); }",
+                 insn.rb, insn.ra, insn.rd);
+            break;
+
+        case PPCInsnType::SUBFE:
+            emit("{ uint64_t t = (uint64_t)~ctx->r[%u] + (uint64_t)ctx->r[%u] + ctx->xer_ca(); ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }",
+                 insn.ra, insn.rb, insn.rd);
+            break;
+
+        case PPCInsnType::SUBFIC:
+            emit("{ uint64_t t = (uint64_t)(uint32_t)%d - (uint64_t)ctx->r[%u]; ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(!(t >> 32)); }",
+                 insn.simm, insn.ra, insn.rd);
+            break;
+
+        case PPCInsnType::NEG:
+            emit("ctx->r[%u] = -ctx->r[%u];", insn.rd, insn.ra);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.rd);
+            break;
+
+        case PPCInsnType::MULLI:
+            emit("ctx->r[%u] = (int32_t)ctx->r[%u] * %d;", insn.rd, insn.ra, insn.simm);
+            break;
+
+        case PPCInsnType::MULLW:
+            emit("ctx->r[%u] = (int32_t)ctx->r[%u] * (int32_t)ctx->r[%u];", insn.rd, insn.ra, insn.rb);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.rd);
+            break;
+
+        case PPCInsnType::MULHW:
+            emit("ctx->r[%u] = (uint32_t)((int64_t)(int32_t)ctx->r[%u] * (int64_t)(int32_t)ctx->r[%u] >> 32);",
+                 insn.rd, insn.ra, insn.rb);
+            break;
+
+        case PPCInsnType::MULHWU:
+            emit("ctx->r[%u] = (uint32_t)((uint64_t)ctx->r[%u] * (uint64_t)ctx->r[%u] >> 32);",
+                 insn.rd, insn.ra, insn.rb);
+            break;
+
+        case PPCInsnType::DIVW:
+            emit("ctx->r[%u] = (int32_t)ctx->r[%u] / (int32_t)ctx->r[%u];", insn.rd, insn.ra, insn.rb);
+            break;
+
+        case PPCInsnType::DIVWU:
+            emit("ctx->r[%u] = ctx->r[%u] / ctx->r[%u];", insn.rd, insn.ra, insn.rb);
+            break;
+
+        // ==== Integer Compare ====
+        case PPCInsnType::CMPI:
+            emit("{ int32_t a = (int32_t)ctx->r[%u]; int32_t b = %d; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(%u, c); }",
+                 insn.ra, insn.simm, insn.crfd);
+            break;
+
+        case PPCInsnType::CMP:
+            emit("{ int32_t a = (int32_t)ctx->r[%u]; int32_t b = (int32_t)ctx->r[%u]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(%u, c); }",
+                 insn.ra, insn.rb, insn.crfd);
+            break;
+
+        case PPCInsnType::CMPLI:
+            emit("{ uint32_t a = ctx->r[%u]; uint32_t b = %u; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(%u, c); }",
+                 insn.ra, insn.uimm, insn.crfd);
+            break;
+
+        case PPCInsnType::CMPL:
+            emit("{ uint32_t a = ctx->r[%u]; uint32_t b = ctx->r[%u]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(%u, c); }",
+                 insn.ra, insn.rb, insn.crfd);
+            break;
+
+        // ==== Integer Logical ====
+        case PPCInsnType::ORI:
+            emit("ctx->r[%u] = ctx->r[%u] | 0x%X;", insn.ra, insn.rs, insn.uimm);
+            break;
+
+        case PPCInsnType::ORIS:
+            emit("ctx->r[%u] = ctx->r[%u] | 0x%X;", insn.ra, insn.rs, insn.uimm << 16);
+            break;
+
+        case PPCInsnType::ANDI:
+            emit("ctx->r[%u] = ctx->r[%u] & 0x%X;", insn.ra, insn.rs, insn.uimm);
+            emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.ra);
+            break;
+
+        case PPCInsnType::ANDIS:
+            emit("ctx->r[%u] = ctx->r[%u] & 0x%X;", insn.ra, insn.rs, insn.uimm << 16);
+            emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.ra);
+            break;
+
+        case PPCInsnType::XORI:
+            emit("ctx->r[%u] = ctx->r[%u] ^ 0x%X;", insn.ra, insn.rs, insn.uimm);
+            break;
+
+        case PPCInsnType::XORIS:
+            emit("ctx->r[%u] = ctx->r[%u] ^ 0x%X;", insn.ra, insn.rs, insn.uimm << 16);
+            break;
+
+        case PPCInsnType::AND:
+            emit("ctx->r[%u] = ctx->r[%u] & ctx->r[%u];", insn.ra, insn.rs, insn.rb);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.ra);
+            break;
+
+        case PPCInsnType::OR:
+            emit("ctx->r[%u] = ctx->r[%u] | ctx->r[%u];", insn.ra, insn.rs, insn.rb);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.ra);
+            break;
+
+        case PPCInsnType::XOR:
+            emit("ctx->r[%u] = ctx->r[%u] ^ ctx->r[%u];", insn.ra, insn.rs, insn.rb);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.ra);
+            break;
+
+        case PPCInsnType::NOR:
+            emit("ctx->r[%u] = ~(ctx->r[%u] | ctx->r[%u]);", insn.ra, insn.rs, insn.rb);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.ra);
+            break;
+
+        case PPCInsnType::NAND:
+            emit("ctx->r[%u] = ~(ctx->r[%u] & ctx->r[%u]);", insn.ra, insn.rs, insn.rb);
+            break;
+
+        case PPCInsnType::ANDC:
+            emit("ctx->r[%u] = ctx->r[%u] & ~ctx->r[%u];", insn.ra, insn.rs, insn.rb);
+            break;
+
+        case PPCInsnType::ORC:
+            emit("ctx->r[%u] = ctx->r[%u] | ~ctx->r[%u];", insn.ra, insn.rs, insn.rb);
+            break;
+
+        case PPCInsnType::EQV:
+            emit("ctx->r[%u] = ~(ctx->r[%u] ^ ctx->r[%u]);", insn.ra, insn.rs, insn.rb);
+            break;
+
+        case PPCInsnType::EXTSB:
+            emit("ctx->r[%u] = (uint32_t)(int32_t)(int8_t)ctx->r[%u];", insn.ra, insn.rs);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.ra);
+            break;
+
+        case PPCInsnType::EXTSH:
+            emit("ctx->r[%u] = (uint32_t)(int32_t)(int16_t)ctx->r[%u];", insn.ra, insn.rs);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.ra);
+            break;
+
+        case PPCInsnType::CNTLZW:
+            emit("ctx->r[%u] = PPC_CNTLZW(ctx->r[%u]);", insn.ra, insn.rs);
+            break;
+
+        // ==== Shift/Rotate ====
+        case PPCInsnType::SLW:
+            emit("ctx->r[%u] = (ctx->r[%u] & 0x20) ? 0 : (ctx->r[%u] << (ctx->r[%u] & 0x1F));",
+                 insn.ra, insn.rb, insn.rs, insn.rb);
+            break;
+
+        case PPCInsnType::SRW:
+            emit("ctx->r[%u] = (ctx->r[%u] & 0x20) ? 0 : (ctx->r[%u] >> (ctx->r[%u] & 0x1F));",
+                 insn.ra, insn.rb, insn.rs, insn.rb);
+            break;
+
+        case PPCInsnType::SRAW:
+            emit("{ int32_t s = (int32_t)ctx->r[%u]; uint32_t n = ctx->r[%u] & 0x3F; if (n > 31) { ctx->r[%u] = s >> 31; ctx->set_xer_ca(s < 0); } else { ctx->r[%u] = (uint32_t)(s >> n); ctx->set_xer_ca(s < 0 && (s & ((1 << n) - 1))); } }",
+                 insn.rs, insn.rb, insn.ra, insn.ra);
+            break;
+
+        case PPCInsnType::SRAWI:
+            emit("{ int32_t s = (int32_t)ctx->r[%u]; ctx->r[%u] = (uint32_t)(s >> %u); ctx->set_xer_ca(s < 0 && (s & ((1 << %u) - 1))); }",
+                 insn.rs, insn.ra, insn.sh, insn.sh);
+            break;
+
+        case PPCInsnType::RLWINM: {
+            // Rotate left word immediate then AND with mask
+            uint32_t mask = 0;
+            for (uint32_t i = insn.mb; i != ((insn.me + 1) & 31) || mask == 0; i = (i + 1) & 31) {
+                mask |= (1u << (31 - i));
+                if (i == insn.me) break;
+            }
+            if (insn.sh == 0)
+                emit("ctx->r[%u] = ctx->r[%u] & 0x%08X;", insn.ra, insn.rs, mask);
+            else
+                emit("ctx->r[%u] = PPC_ROTL32(ctx->r[%u], %u) & 0x%08X;", insn.ra, insn.rs, insn.sh, mask);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.ra);
+            break;
+        }
+
+        case PPCInsnType::RLWIMI: {
+            uint32_t mask = 0;
+            for (uint32_t i = insn.mb; i != ((insn.me + 1) & 31) || mask == 0; i = (i + 1) & 31) {
+                mask |= (1u << (31 - i));
+                if (i == insn.me) break;
+            }
+            emit("ctx->r[%u] = (PPC_ROTL32(ctx->r[%u], %u) & 0x%08X) | (ctx->r[%u] & 0x%08X);",
+                 insn.ra, insn.rs, insn.sh, mask, insn.ra, ~mask);
+            break;
+        }
+
+        case PPCInsnType::RLWNM: {
+            uint32_t mask = 0;
+            for (uint32_t i = insn.mb; i != ((insn.me + 1) & 31) || mask == 0; i = (i + 1) & 31) {
+                mask |= (1u << (31 - i));
+                if (i == insn.me) break;
+            }
+            emit("ctx->r[%u] = PPC_ROTL32(ctx->r[%u], ctx->r[%u] & 0x1F) & 0x%08X;",
+                 insn.ra, insn.rs, insn.rb, mask);
+            break;
+        }
+
+        // ==== Load Integer ====
+        case PPCInsnType::LBZ:
+            emit("ctx->r[%u] = MEM_READ8(%s + %d);",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm);
+            break;
+        case PPCInsnType::LHZ:
+            emit("ctx->r[%u] = MEM_READ16(%s + %d);",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm);
+            break;
+        case PPCInsnType::LHA:
+            emit("ctx->r[%u] = (uint32_t)(int32_t)(int16_t)MEM_READ16(%s + %d);",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm);
+            break;
+        case PPCInsnType::LWZ:
+            emit("ctx->r[%u] = MEM_READ32(%s + %d);",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm);
+            break;
+
+        // Load with update
+        case PPCInsnType::LWZU:
+            emit("ctx->r[%u] += %d; ctx->r[%u] = MEM_READ32(ctx->r[%u]);",
+                 insn.ra, insn.simm, insn.rd, insn.ra);
+            break;
+        case PPCInsnType::LBZU:
+            emit("ctx->r[%u] += %d; ctx->r[%u] = MEM_READ8(ctx->r[%u]);",
+                 insn.ra, insn.simm, insn.rd, insn.ra);
+            break;
+        case PPCInsnType::LHZU:
+            emit("ctx->r[%u] += %d; ctx->r[%u] = MEM_READ16(ctx->r[%u]);",
+                 insn.ra, insn.simm, insn.rd, insn.ra);
+            break;
+
+        // Load indexed
+        case PPCInsnType::LBZX:
+            emit("ctx->r[%u] = MEM_READ8(ctx->r[%u] + ctx->r[%u]);", insn.rd, insn.ra ? insn.ra : 0, insn.rb);
+            break;
+        case PPCInsnType::LHZX:
+            emit("ctx->r[%u] = MEM_READ16(ctx->r[%u] + ctx->r[%u]);", insn.rd, insn.ra ? insn.ra : 0, insn.rb);
+            break;
+        case PPCInsnType::LWZX:
+            emit("ctx->r[%u] = MEM_READ32(ctx->r[%u] + ctx->r[%u]);", insn.rd, insn.ra ? insn.ra : 0, insn.rb);
+            break;
+
+        // Load multiple words
+        case PPCInsnType::LMW:
+            emit("{ uint32_t ea = %s + %d; for (int i = %u; i < 32; i++) { ctx->r[i] = MEM_READ32(ea); ea += 4; } }",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm, insn.rd);
+            break;
+
+        // ==== Store Integer ====
+        case PPCInsnType::STB:
+            emit("MEM_WRITE8(%s + %d, (uint8_t)ctx->r[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm, insn.rs);
+            break;
+        case PPCInsnType::STH:
+            emit("MEM_WRITE16(%s + %d, (uint16_t)ctx->r[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm, insn.rs);
+            break;
+        case PPCInsnType::STW:
+            emit("MEM_WRITE32(%s + %d, ctx->r[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm, insn.rs);
+            break;
+
+        // Store with update (used heavily for stack frames: stwu r1, -X(r1))
+        case PPCInsnType::STWU:
+            emit("ctx->r[%u] += %d; MEM_WRITE32(ctx->r[%u], ctx->r[%u]);",
+                 insn.ra, insn.simm, insn.ra, insn.rs);
+            break;
+
+        // Store multiple
+        case PPCInsnType::STMW:
+            emit("{ uint32_t ea = %s + %d; for (int i = %u; i < 32; i++) { MEM_WRITE32(ea, ctx->r[i]); ea += 4; } }",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm, insn.rs);
+            break;
+
+        // ==== Load/Store Float ====
+        case PPCInsnType::LFS:
+            emit("ctx->f[%u] = (double)MEM_READF32(%s + %d); ctx->ps[%u][0] = ctx->ps[%u][1] = MEM_READF32(%s + %d);",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm,
+                 insn.rd, insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm);
+            break;
+
+        case PPCInsnType::LFD:
+            emit("ctx->f[%u] = MEM_READF64(%s + %d);",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm);
+            break;
+
+        case PPCInsnType::STFS:
+            emit("MEM_WRITEF32(%s + %d, (float)ctx->f[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm, insn.rs);
+            break;
+
+        case PPCInsnType::STFD:
+            emit("MEM_WRITEF64(%s + %d, ctx->f[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.simm, insn.rs);
+            break;
+
+        // ==== Floating Point Arithmetic ====
+        case PPCInsnType::FADDS:
+            emit("ctx->f[%u] = (double)((float)ctx->f[%u] + (float)ctx->f[%u]); ctx->ps[%u][0] = (float)ctx->f[%u];",
+                 insn.rd, insn.ra, insn.rb, insn.rd, insn.rd);
+            break;
+        case PPCInsnType::FSUBS:
+            emit("ctx->f[%u] = (double)((float)ctx->f[%u] - (float)ctx->f[%u]); ctx->ps[%u][0] = (float)ctx->f[%u];",
+                 insn.rd, insn.ra, insn.rb, insn.rd, insn.rd);
+            break;
+        case PPCInsnType::FMULS:
+            emit("ctx->f[%u] = (double)((float)ctx->f[%u] * (float)ctx->f[%u]); ctx->ps[%u][0] = (float)ctx->f[%u];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rd, insn.rd);
+            break;
+        case PPCInsnType::FDIVS:
+            emit("ctx->f[%u] = (double)((float)ctx->f[%u] / (float)ctx->f[%u]); ctx->ps[%u][0] = (float)ctx->f[%u];",
+                 insn.rd, insn.ra, insn.rb, insn.rd, insn.rd);
+            break;
+        case PPCInsnType::FADD:
+            emit("ctx->f[%u] = ctx->f[%u] + ctx->f[%u];", insn.rd, insn.ra, insn.rb);
+            break;
+        case PPCInsnType::FSUB:
+            emit("ctx->f[%u] = ctx->f[%u] - ctx->f[%u];", insn.rd, insn.ra, insn.rb);
+            break;
+        case PPCInsnType::FMUL:
+            emit("ctx->f[%u] = ctx->f[%u] * ctx->f[%u];", insn.rd, insn.ra, insn.rc_reg);
+            break;
+        case PPCInsnType::FDIV:
+            emit("ctx->f[%u] = ctx->f[%u] / ctx->f[%u];", insn.rd, insn.ra, insn.rb);
+            break;
+
+        case PPCInsnType::FMADDS:
+            emit("ctx->f[%u] = (double)((float)ctx->f[%u] * (float)ctx->f[%u] + (float)ctx->f[%u]);",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::FMSUBS:
+            emit("ctx->f[%u] = (double)((float)ctx->f[%u] * (float)ctx->f[%u] - (float)ctx->f[%u]);",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::FMADD:
+            emit("ctx->f[%u] = ctx->f[%u] * ctx->f[%u] + ctx->f[%u];", insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::FMSUB:
+            emit("ctx->f[%u] = ctx->f[%u] * ctx->f[%u] - ctx->f[%u];", insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::FNMSUBS:
+            emit("ctx->f[%u] = (double)-((float)ctx->f[%u] * (float)ctx->f[%u] - (float)ctx->f[%u]);",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::FNMADDS:
+            emit("ctx->f[%u] = (double)-((float)ctx->f[%u] * (float)ctx->f[%u] + (float)ctx->f[%u]);",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+
+        case PPCInsnType::FRES:
+            emit("ctx->f[%u] = 1.0 / ctx->f[%u];", insn.rd, insn.rb);
+            break;
+        case PPCInsnType::FRSQRTE:
+            emit("ctx->f[%u] = 1.0 / sqrt(ctx->f[%u]);", insn.rd, insn.rb);
+            break;
+        case PPCInsnType::FSEL:
+            emit("ctx->f[%u] = (ctx->f[%u] >= 0.0) ? ctx->f[%u] : ctx->f[%u];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::FMR:
+            emit("ctx->f[%u] = ctx->f[%u];", insn.rd, insn.rb);
+            break;
+        case PPCInsnType::FNEG:
+            emit("ctx->f[%u] = -ctx->f[%u];", insn.rd, insn.rb);
+            break;
+        case PPCInsnType::FABS:
+            emit("ctx->f[%u] = fabs(ctx->f[%u]);", insn.rd, insn.rb);
+            break;
+        case PPCInsnType::FRSP:
+            emit("ctx->f[%u] = (double)(float)ctx->f[%u]; ctx->ps[%u][0] = (float)ctx->f[%u];",
+                 insn.rd, insn.rb, insn.rd, insn.rd);
+            break;
+        case PPCInsnType::FCTIWZ:
+            emit("{ int32_t v = (int32_t)ctx->f[%u]; memcpy(&ctx->f[%u], &(uint64_t){(uint64_t)(uint32_t)v}, 8); }",
+                 insn.rb, insn.rd);
+            break;
+
+        // ==== Float Compare ====
+        case PPCInsnType::FCMPU:
+            emit("{ double a = ctx->f[%u]; double b = ctx->f[%u]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : (a == b) ? 2 : 1; ctx->set_cr_field(%u, c); }",
+                 insn.ra, insn.rb, insn.crfd);
+            break;
+
+        // ==== Paired Singles (the GameCube special sauce) ====
+        case PPCInsnType::PS_ADD:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] + ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1] + ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rb, insn.rd, insn.ra, insn.rb);
+            break;
+        case PPCInsnType::PS_SUB:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] - ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1] - ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rb, insn.rd, insn.ra, insn.rb);
+            break;
+        case PPCInsnType::PS_MUL:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] * ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1] * ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rd, insn.ra, insn.rc_reg);
+            break;
+        case PPCInsnType::PS_DIV:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] / ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1] / ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rb, insn.rd, insn.ra, insn.rb);
+            break;
+        case PPCInsnType::PS_MADD:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] * ctx->ps[%u][0] + ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1] * ctx->ps[%u][1] + ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb, insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::PS_MSUB:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] * ctx->ps[%u][0] - ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1] * ctx->ps[%u][1] - ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb, insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::PS_MULS0:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] * ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1] * ctx->ps[%u][0];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rd, insn.ra, insn.rc_reg);
+            break;
+        case PPCInsnType::PS_MULS1:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] * ctx->ps[%u][1]; ctx->ps[%u][1] = ctx->ps[%u][1] * ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rd, insn.ra, insn.rc_reg);
+            break;
+        case PPCInsnType::PS_MERGE00:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][0];",
+                 insn.rd, insn.ra, insn.rd, insn.rb);
+            break;
+        case PPCInsnType::PS_MERGE01:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rd, insn.rb);
+            break;
+        case PPCInsnType::PS_MERGE10:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][1]; ctx->ps[%u][1] = ctx->ps[%u][0];",
+                 insn.rd, insn.ra, insn.rd, insn.rb);
+            break;
+        case PPCInsnType::PS_MERGE11:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][1]; ctx->ps[%u][1] = ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rd, insn.rb);
+            break;
+        case PPCInsnType::PS_MR:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1];",
+                 insn.rd, insn.rb, insn.rd, insn.rb);
+            break;
+        case PPCInsnType::PS_NEG:
+            emit("ctx->ps[%u][0] = -ctx->ps[%u][0]; ctx->ps[%u][1] = -ctx->ps[%u][1];",
+                 insn.rd, insn.rb, insn.rd, insn.rb);
+            break;
+        case PPCInsnType::PS_ABS:
+            emit("ctx->ps[%u][0] = fabsf(ctx->ps[%u][0]); ctx->ps[%u][1] = fabsf(ctx->ps[%u][1]);",
+                 insn.rd, insn.rb, insn.rd, insn.rb);
+            break;
+        case PPCInsnType::PS_RES:
+            emit("ctx->ps[%u][0] = 1.0f / ctx->ps[%u][0]; ctx->ps[%u][1] = 1.0f / ctx->ps[%u][1];",
+                 insn.rd, insn.rb, insn.rd, insn.rb);
+            break;
+
+        // ==== SPR Access ====
+        case PPCInsnType::MFSPR:
+            if (insn.spr == 8)       emit("ctx->r[%u] = ctx->lr;", insn.rd);
+            else if (insn.spr == 9)  emit("ctx->r[%u] = ctx->ctr;", insn.rd);
+            else if (insn.spr == 1)  emit("ctx->r[%u] = ctx->xer;", insn.rd);
+            else if (insn.spr >= 912 && insn.spr <= 919)
+                emit("ctx->r[%u] = ctx->gqr[%u];", insn.rd, insn.spr - 912);
+            else emit("ctx->r[%u] = 0; // mfspr %u (unhandled)", insn.rd, insn.spr);
+            break;
+
+        case PPCInsnType::MTSPR:
+            if (insn.spr == 8)       emit("ctx->lr = ctx->r[%u];", insn.rs);
+            else if (insn.spr == 9)  emit("ctx->ctr = ctx->r[%u];", insn.rs);
+            else if (insn.spr == 1)  emit("ctx->xer = ctx->r[%u];", insn.rs);
+            else if (insn.spr >= 912 && insn.spr <= 919)
+                emit("ctx->gqr[%u] = ctx->r[%u];", insn.spr - 912, insn.rs);
+            else emit("// mtspr %u, r%u (unhandled)", insn.spr, insn.rs);
+            break;
+
+        case PPCInsnType::MFCR:
+            emit("ctx->r[%u] = ctx->cr;", insn.rd);
+            break;
+
+        case PPCInsnType::MTCRF:
+            emit("{ uint32_t mask = 0; uint32_t crm = (0x%08X >> 12) & 0xFF; for (int i = 0; i < 8; i++) if (crm & (1 << (7-i))) mask |= 0xF << (28 - i*4); ctx->cr = (ctx->cr & ~mask) | (ctx->r[%u] & mask); }",
+                 insn.raw, insn.rs);
+            break;
+
+        // ==== Branch (handled at block level, but emit for completeness) ====
+        case PPCInsnType::B:
+            if (insn.link) emit("func_%08X(ctx, mem); // bl", insn.branch_target);
+            else           emit("goto label_%08X; // b", insn.branch_target);
+            break;
+
+        case PPCInsnType::BC:
+            // Conditional branch — handled by block structure
+            emit("// bc %u, %u -> 0x%08X", insn.bo, insn.bi, insn.branch_target);
+            break;
+
+        case PPCInsnType::BCLR:
+            if (insn.is_return()) emit("return; // blr");
+            else if (insn.link)   emit("CALL_INDIRECT(ctx->lr, ctx, mem); // blrl");
+            else                  emit("// bclr (conditional return)");
+            break;
+
+        case PPCInsnType::BCCTR:
+            if (insn.link) emit("CALL_INDIRECT(ctx->ctr, ctx, mem); // bctrl");
+            else           emit("JUMP_INDIRECT(ctx->ctr); // bctr");
+            break;
+
+        // ==== No-ops and cache ops (safe to ignore) ====
+        case PPCInsnType::NOP:
+        case PPCInsnType::SYNC:
+        case PPCInsnType::ISYNC:
+        case PPCInsnType::EIEIO:
+        case PPCInsnType::DCBF:
+        case PPCInsnType::DCBST:
+        case PPCInsnType::DCBT:
+        case PPCInsnType::DCBTST:
+        case PPCInsnType::ICBI:
+            emit("// %s (no-op on x86)", insn.mnemonic.c_str());
+            break;
+
+        case PPCInsnType::DCBZ:
+            emit("memset(mem->translate(ctx->r[%u] + ctx->r[%u]) & ~31), 0, 32); // dcbz",
+                 insn.ra, insn.rb);
+            break;
+
+        default:
+            emit("// UNIMPLEMENTED: %s (0x%08X)", insn.mnemonic.c_str(), insn.raw);
+            break;
+        }
+    }
+
+void emit_file_header(FILE* out) {
+    fprintf(out, "// =============================================================\n");
+    fprintf(out, "// Wind Waker Static Recompilation - Auto-generated C code\n");
+    fprintf(out, "// Source: GameCube DOL PowerPC 750CXe (Gekko)\n");
+    fprintf(out, "// Target: x86-64 Windows (MSVC/Clang/GCC)\n");
+    fprintf(out, "// DO NOT EDIT - Generated by ww_recompiler\n");
+    fprintf(out, "// =============================================================\n\n");
+    fprintf(out, "#include \"ww/runtime.h\"\n");
+    fprintf(out, "#include <cmath>\n");
+    fprintf(out, "#include <cstring>\n\n");
+    fprintf(out, "using namespace ww;\n\n");
+    fprintf(out, "// Rotate-left helper\n");
+    fprintf(out, "#define PPC_ROTL32(v, n) (((v) << (n)) | ((v) >> (32 - (n))))\n\n");
+    fprintf(out, "// Memory access macros\n");
+    fprintf(out, "#define MEM_READ8(addr)        g_mem.read8(addr)\n");
+    fprintf(out, "#define MEM_READ16(addr)       g_mem.read16(addr)\n");
+    fprintf(out, "#define MEM_READ32(addr)       g_mem.read32(addr)\n");
+    fprintf(out, "#define MEM_READF32(addr)      g_mem.readf32(addr)\n");
+    fprintf(out, "#define MEM_READF64(addr)      g_mem.readf64(addr)\n");
+    fprintf(out, "#define MEM_WRITE8(addr, v)    g_mem.write8(addr, v)\n");
+    fprintf(out, "#define MEM_WRITE16(addr, v)   g_mem.write16(addr, v)\n");
+    fprintf(out, "#define MEM_WRITE32(addr, v)   g_mem.write32(addr, v)\n");
+    fprintf(out, "#define MEM_WRITEF32(addr, v)  g_mem.writef32(addr, v)\n");
+    fprintf(out, "#define MEM_WRITEF64(addr, v)  g_mem.writef64(addr, v)\n\n");
+    fprintf(out, "// Indirect call/jump\n");
+    fprintf(out, "#define CALL_INDIRECT(addr, ctx, mem) g_func_table.call(addr, ctx, mem)\n");
+    fprintf(out, "#define JUMP_INDIRECT(addr) { /* TODO: switch table */ }\n\n");
+}
+
+} // namespace ww

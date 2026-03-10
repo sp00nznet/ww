@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh api:*)",
+      "WebSearch",
+      "Bash(gh repo:*)",
+      "Bash(mkdir:*)",
+      "Bash(cmake:*)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(dd bs=1:*)",
+      "Bash(build/Release/ww_dol_info.exe:*)",
+      "Bash(cd \"D:/recomp/gc/ww\" && cmake --build build --config Release 2>&1 | grep -E \"error|Build succeeded|\\\\.exe$|\\\\.lib$\" | tail -20)",
+      "Bash(cd \"D:/recomp/gc/gcrecomp\" && mkdir -p include/gcrecomp/hw include/gcrecomp/os include/gcrecomp/gx include/gcrecomp/audio include/gcrecomp/input src/os src/gx src/gx/d3d11 src/audio src/input src/runtime tools/recompiler tools/dol_info docs)"
+    ]
+  }
+}

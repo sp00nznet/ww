@@ -1,0 +1,44 @@
+# Build artifacts
+build/
+out/
+cmake-build-*/
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# IDE
+.vs/
+.vscode/
+*.sln
+*.vcxproj*
+*.suo
+*.user
+CMakeSettings.json
+.idea/
+
+# Game files - DO NOT COMMIT
+*.iso
+*.gcm
+*.rvz
+*.wia
+*.wbfs
+*.ciso
+*.nfs
+*.gcz
+*.tgc
+
+# Generated recompiled source
+recompiled/
+
+# Extracted assets
+assets/extracted/
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
