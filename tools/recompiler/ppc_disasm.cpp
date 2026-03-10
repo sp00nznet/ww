@@ -337,6 +337,8 @@ PPCInsn ppc_disasm(uint32_t raw, uint32_t address) {
         insn.mnemonic = "psq_l";
         insn.rd = PPC_FD(raw);
         insn.ra = PPC_RA(raw);
+        insn.psq_w = (raw >> 15) & 1;       // W bit: 0=paired, 1=single
+        insn.psq_i = (raw >> 12) & 0x7;     // GQR index (0-7)
         insn.simm = (int16_t)((raw & 0xFFF) << 4) >> 4; // 12-bit signed
         break;
     }
@@ -345,6 +347,8 @@ PPCInsn ppc_disasm(uint32_t raw, uint32_t address) {
         insn.mnemonic = "psq_lu";
         insn.rd = PPC_FD(raw);
         insn.ra = PPC_RA(raw);
+        insn.psq_w = (raw >> 15) & 1;
+        insn.psq_i = (raw >> 12) & 0x7;
         insn.simm = (int16_t)((raw & 0xFFF) << 4) >> 4;
         break;
     }
@@ -353,6 +357,8 @@ PPCInsn ppc_disasm(uint32_t raw, uint32_t address) {
         insn.mnemonic = "psq_st";
         insn.rs = PPC_FS(raw);
         insn.ra = PPC_RA(raw);
+        insn.psq_w = (raw >> 15) & 1;
+        insn.psq_i = (raw >> 12) & 0x7;
         insn.simm = (int16_t)((raw & 0xFFF) << 4) >> 4;
         break;
     }
@@ -361,6 +367,8 @@ PPCInsn ppc_disasm(uint32_t raw, uint32_t address) {
         insn.mnemonic = "psq_stu";
         insn.rs = PPC_FS(raw);
         insn.ra = PPC_RA(raw);
+        insn.psq_w = (raw >> 15) & 1;
+        insn.psq_i = (raw >> 12) & 0x7;
         insn.simm = (int16_t)((raw & 0xFFF) << 4) >> 4;
         break;
     }
@@ -520,6 +528,20 @@ PPCInsn ppc_disasm(uint32_t raw, uint32_t address) {
         // stwcx.
         case 150: insn.type = PPCInsnType::STWCX;  insn.mnemonic = "stwcx."; break;
 
+        // Supervisor-level
+        case 83:  insn.type = PPCInsnType::MFMSR;  insn.mnemonic = "mfmsr"; break;
+        case 146: insn.type = PPCInsnType::MTMSR;  insn.mnemonic = "mtmsr"; break;
+        case 210: insn.type = PPCInsnType::SYNC;   insn.mnemonic = "mtsrin"; break; // segment reg, no-op
+        case 595: insn.type = PPCInsnType::SYNC;   insn.mnemonic = "mfsrin"; break; // segment reg, no-op
+        case 242: insn.type = PPCInsnType::SYNC;   insn.mnemonic = "mfsr"; break;   // segment reg, no-op
+        case 370: insn.type = PPCInsnType::TLBIE;  insn.mnemonic = "tlbia"; break;
+        case 306: insn.type = PPCInsnType::TLBIE;  insn.mnemonic = "tlbie"; break;
+        case 566: insn.type = PPCInsnType::TLBSYNC; insn.mnemonic = "tlbsync"; break;
+        case 978: insn.type = PPCInsnType::DCBZ_L; insn.mnemonic = "dcbz_l"; break;
+        case 470: insn.type = PPCInsnType::DCBI;   insn.mnemonic = "dcbi"; break;
+        case 371: insn.type = PPCInsnType::MFSPR;  insn.mnemonic = "mftb";
+                  insn.spr = PPC_SPR(raw); break; // mftb uses same encoding as mfspr
+
         // Trap
         case 4:   insn.type = PPCInsnType::TW;     insn.mnemonic = "tw"; break;
 
@@ -596,6 +618,8 @@ PPCInsn ppc_disasm(uint32_t raw, uint32_t address) {
         case 15:  insn.type = PPCInsnType::FCTIWZ; insn.mnemonic = "fctiwz"; break;
         case 583: insn.type = PPCInsnType::MFFS;   insn.mnemonic = "mffs"; break;
         case 711: insn.type = PPCInsnType::MTFSF;  insn.mnemonic = "mtfsf"; break;
+        case 38:  insn.type = PPCInsnType::MTFSF;  insn.mnemonic = "mtfsb1"; break; // set FPSCR bit
+        case 70:  insn.type = PPCInsnType::MTFSF;  insn.mnemonic = "mtfsb0"; break; // clear FPSCR bit
         default:
             insn.type = PPCInsnType::UNKNOWN;
             insn.mnemonic = "op63_???";
