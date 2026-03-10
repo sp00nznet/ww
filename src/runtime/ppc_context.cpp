@@ -1,10 +1,8 @@
 // =============================================================================
-// PPCContext Implementation
-// The heart of the runtime: every recompiled function operates on this state
+// Wind Waker - PPCContext global instance
 // =============================================================================
 
 #include "ww/runtime.h"
-#include <cstdio>
 
 namespace ww {
 

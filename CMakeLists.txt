@@ -17,6 +17,12 @@ option(WW_BUILD_RUNTIME "Build the game runtime" ON)
 option(WW_BUILD_TOOLS "Build auxiliary tools (DOL parser, asset extractor)" ON)
 
 # ===========================================================================
+# gcrecomp — Generic GameCube recompilation toolkit (submodule)
+# Provides: gcrecomp_gx, gcrecomp_audio, gcrecomp_input, gcrecomp_runtime
+# ===========================================================================
+add_subdirectory(lib/gcrecomp)
+
+# ===========================================================================
 # Tool: DOL/REL Parser & Static Recompiler
 # ===========================================================================
 if(WW_BUILD_RECOMPILER)
@@ -34,10 +40,12 @@ if(WW_BUILD_RECOMPILER)
 endif()
 
 # ===========================================================================
-# Runtime Library: Links with recompiled game code
+# Runtime Library: Wind Waker-specific OS/runtime layer
+#
+# Game-specific OS HLE, memory map, and function table. Links against
+# gcrecomp for GX graphics, audio, and input.
 # ===========================================================================
 if(WW_BUILD_RUNTIME)
-    # Runtime core
     add_library(ww_runtime STATIC
         src/runtime/ppc_context.cpp
         src/runtime/memory.cpp
@@ -45,51 +53,18 @@ if(WW_BUILD_RUNTIME)
         src/runtime/os_funcs.cpp
     )
     target_include_directories(ww_runtime PUBLIC include)
+    target_link_libraries(ww_runtime PUBLIC gcrecomp_runtime)
 
-    # GX Graphics (D3D11 backend)
-    add_library(ww_gx STATIC
-        src/gx/gx_core.cpp
-        src/gx/gx_tev.cpp
-        src/gx/gx_texture.cpp
-        src/gx/gx_vertex.cpp
-        src/gx/gx_matrix.cpp
-        src/gx/gx_display_list.cpp
-        src/gx/d3d11/d3d11_backend.cpp
-        src/gx/d3d11/d3d11_shaders.cpp
-    )
-    target_include_directories(ww_gx PUBLIC include)
-    if(WIN32)
-        target_link_libraries(ww_gx PRIVATE d3d11 d3dcompiler dxgi)
-    endif()
-
-    # Audio runtime
-    add_library(ww_audio STATIC
-        src/audio/dsp_decoder.cpp
-        src/audio/audio_mixer.cpp
-        src/audio/audio_system.cpp
-    )
-    target_include_directories(ww_audio PUBLIC include)
-    if(WIN32)
-        target_link_libraries(ww_audio PRIVATE xaudio2)
-    endif()
-
-    # Input
-    add_library(ww_input STATIC
-        src/input/input_system.cpp
-        src/input/pad_mapping.cpp
-    )
-    target_include_directories(ww_input PUBLIC include)
-    if(WIN32)
-        target_link_libraries(ww_input PRIVATE xinput)
-    endif()
-
-    # Main executable (links recompiled code + runtime)
-    # This target is configured after recompilation generates the source files
-    # For now, we build a launcher/test harness
+    # Main executable (links recompiled code + runtime + gcrecomp libraries)
     add_executable(ww_launcher
         src/main.cpp
     )
-    target_link_libraries(ww_launcher PRIVATE ww_runtime ww_gx ww_audio ww_input)
+    target_link_libraries(ww_launcher PRIVATE
+        ww_runtime
+        gcrecomp_gx
+        gcrecomp_audio
+        gcrecomp_input
+    )
     target_include_directories(ww_launcher PRIVATE include)
     if(WIN32)
         target_link_libraries(ww_launcher PRIVATE d3d11 d3dcompiler dxgi)
