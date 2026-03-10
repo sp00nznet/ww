@@ -1,6 +1,9 @@
 // =============================================================================
-// Function Table - Maps GameCube addresses to native recompiled functions
-// Critical for indirect calls: virtual methods, function pointers, switch tables
+// Wind Waker - Function Table and Runtime Init/Shutdown
+//
+// The FuncTable member functions are provided by gcrecomp_runtime.
+// This file defines the global instance and Wind Waker-specific
+// initialization that wires up OS HLE and low-memory state.
 // =============================================================================
 
 #include "ww/runtime.h"
@@ -10,30 +13,10 @@ namespace ww {
 
 FuncTable g_func_table;
 
-void FuncTable::register_func(uint32_t gc_addr, RecompiledFunc func) {
-    table[gc_addr] = func;
-}
-
-RecompiledFunc FuncTable::lookup(uint32_t gc_addr) const {
-    auto it = table.find(gc_addr);
-    if (it != table.end()) return it->second;
-    return nullptr;
-}
-
-void FuncTable::call(uint32_t gc_addr, PPCContext* ctx, Memory* mem) const {
-    RecompiledFunc func = lookup(gc_addr);
-    if (func) {
-        func(ctx, mem);
-    } else {
-        fprintf(stderr, "[FuncTable] Unresolved indirect call to 0x%08X\n", gc_addr);
-        fprintf(stderr, "  LR=0x%08X  r3=0x%08X  r4=0x%08X\n", ctx->lr, ctx->r[3], ctx->r[4]);
-    }
-}
-
 bool runtime_init() {
-    printf("[Runtime] Initializing...\n");
+    printf("[Runtime] Initializing Wind Waker runtime...\n");
 
-    // Initialize memory
+    // Initialize memory (provided by gcrecomp)
     if (!g_mem.init()) return false;
 
     // Initialize CPU context
@@ -41,13 +24,11 @@ bool runtime_init() {
 
     // Set initial stack pointer (top of main RAM - some space for OS)
     g_ctx.r[1] = Memory::MAIN_RAM_BASE + Memory::MAIN_RAM_SIZE - 0x100;
-    // r2 = small data area (SDA) base - will be set by DOL loader
-    // r13 = small data area 2 (SDA2) base - will be set by DOL loader
 
     // Initialize Dolphin OS low-memory state (clock speeds, arena, game ID, etc.)
     init_low_memory(&g_mem);
 
-    // Register OS function replacements
+    // Register OS function replacements (Wind Waker-specific HLE)
     register_os_functions();
 
     printf("[Runtime] Ready. Stack at 0x%08X\n", g_ctx.r[1]);
