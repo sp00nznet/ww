@@ -162,6 +162,8 @@ struct PPCInsn {
     uint32_t spr;
     uint32_t sh, mb, me;
     uint32_t crfd, crfs;
+    uint32_t psq_w;     // PSQ W bit: 0=paired, 1=single
+    uint32_t psq_i;     // PSQ GQR index (0-7)
 
     bool is_branch() const;
     bool is_call() const;       // Branch with link

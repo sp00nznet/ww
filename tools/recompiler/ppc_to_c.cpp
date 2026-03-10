@@ -464,6 +464,7 @@ namespace ww {
 
         // ==== Float Compare ====
         case PPCInsnType::FCMPU:
+        case PPCInsnType::FCMPO:
             emit("{ double a = ctx->f[%u]; double b = ctx->f[%u]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : (a == b) ? 2 : 1; ctx->set_cr_field(%u, c); }",
                  insn.ra, insn.rb, insn.crfd);
             break;
@@ -534,6 +535,365 @@ namespace ww {
                  insn.rd, insn.rb, insn.rd, insn.rb);
             break;
 
+        // ==== Condition Register Operations ====
+        case PPCInsnType::CRXOR:
+            emit("{ bool a = ctx->get_cr_bit(%u); bool b = ctx->get_cr_bit(%u); ctx->set_cr_bit(%u, a ^ b); }",
+                 PPC_CRBA(insn.raw), PPC_CRBB(insn.raw), PPC_CRBD(insn.raw));
+            break;
+        case PPCInsnType::CROR:
+            emit("{ bool a = ctx->get_cr_bit(%u); bool b = ctx->get_cr_bit(%u); ctx->set_cr_bit(%u, a | b); }",
+                 PPC_CRBA(insn.raw), PPC_CRBB(insn.raw), PPC_CRBD(insn.raw));
+            break;
+        case PPCInsnType::CRAND:
+            emit("{ bool a = ctx->get_cr_bit(%u); bool b = ctx->get_cr_bit(%u); ctx->set_cr_bit(%u, a & b); }",
+                 PPC_CRBA(insn.raw), PPC_CRBB(insn.raw), PPC_CRBD(insn.raw));
+            break;
+        case PPCInsnType::CRANDC:
+            emit("{ bool a = ctx->get_cr_bit(%u); bool b = ctx->get_cr_bit(%u); ctx->set_cr_bit(%u, a & !b); }",
+                 PPC_CRBA(insn.raw), PPC_CRBB(insn.raw), PPC_CRBD(insn.raw));
+            break;
+        case PPCInsnType::CREQV:
+            emit("{ bool a = ctx->get_cr_bit(%u); bool b = ctx->get_cr_bit(%u); ctx->set_cr_bit(%u, !(a ^ b)); }",
+                 PPC_CRBA(insn.raw), PPC_CRBB(insn.raw), PPC_CRBD(insn.raw));
+            break;
+        case PPCInsnType::CRNAND:
+            emit("{ bool a = ctx->get_cr_bit(%u); bool b = ctx->get_cr_bit(%u); ctx->set_cr_bit(%u, !(a & b)); }",
+                 PPC_CRBA(insn.raw), PPC_CRBB(insn.raw), PPC_CRBD(insn.raw));
+            break;
+        case PPCInsnType::CRNOR:
+            emit("{ bool a = ctx->get_cr_bit(%u); bool b = ctx->get_cr_bit(%u); ctx->set_cr_bit(%u, !(a | b)); }",
+                 PPC_CRBA(insn.raw), PPC_CRBB(insn.raw), PPC_CRBD(insn.raw));
+            break;
+        case PPCInsnType::CRORC:
+            emit("{ bool a = ctx->get_cr_bit(%u); bool b = ctx->get_cr_bit(%u); ctx->set_cr_bit(%u, a | !b); }",
+                 PPC_CRBA(insn.raw), PPC_CRBB(insn.raw), PPC_CRBD(insn.raw));
+            break;
+        case PPCInsnType::MCRF:
+            emit("ctx->set_cr_field(%u, ctx->get_cr_field(%u));", insn.crfd, insn.crfs);
+            break;
+
+        // ==== Integer Arithmetic (missing) ====
+        case PPCInsnType::ADDIC:
+            emit("{ uint64_t t = (uint64_t)ctx->r[%u] + (uint64_t)(uint32_t)%d; ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }",
+                 insn.ra, insn.simm, insn.rd);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.rd);
+            break;
+        case PPCInsnType::ADDME:
+            emit("{ uint64_t t = (uint64_t)ctx->r[%u] + (uint64_t)0xFFFFFFFF + ctx->xer_ca(); ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }",
+                 insn.ra, insn.rd);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.rd);
+            break;
+        case PPCInsnType::SUBFZE:
+            emit("{ uint64_t t = (uint64_t)~ctx->r[%u] + ctx->xer_ca(); ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }",
+                 insn.ra, insn.rd);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.rd);
+            break;
+        case PPCInsnType::SUBFME:
+            emit("{ uint64_t t = (uint64_t)~ctx->r[%u] + (uint64_t)0xFFFFFFFF + ctx->xer_ca(); ctx->r[%u] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }",
+                 insn.ra, insn.rd);
+            if (insn.rc) emit("ctx->update_cr0((int32_t)ctx->r[%u]);", insn.rd);
+            break;
+
+        // ==== Store Indexed ====
+        case PPCInsnType::STBX:
+            emit("MEM_WRITE8(%s + ctx->r[%u], (uint8_t)ctx->r[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb, insn.rs);
+            break;
+        case PPCInsnType::STHX:
+            emit("MEM_WRITE16(%s + ctx->r[%u], (uint16_t)ctx->r[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb, insn.rs);
+            break;
+        case PPCInsnType::STWX:
+            emit("MEM_WRITE32(%s + ctx->r[%u], ctx->r[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb, insn.rs);
+            break;
+
+        // Store with update (indexed)
+        case PPCInsnType::STBUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITE8(ctx->r[%u], (uint8_t)ctx->r[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            break;
+        case PPCInsnType::STHUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITE16(ctx->r[%u], (uint16_t)ctx->r[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            break;
+        case PPCInsnType::STWUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITE32(ctx->r[%u], ctx->r[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            break;
+
+        // Store byte-reversed
+        case PPCInsnType::STHBRX:
+            emit("{ uint16_t v = (uint16_t)ctx->r[%u]; MEM_WRITE16(%s + ctx->r[%u], (v >> 8) | (v << 8)); }",
+                 insn.rs, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb);
+            break;
+        case PPCInsnType::STWBRX:
+            emit("{ uint32_t v = ctx->r[%u]; MEM_WRITE32(%s + ctx->r[%u], (v >> 24) | ((v >> 8) & 0xFF00) | ((v << 8) & 0xFF0000) | (v << 24)); }",
+                 insn.rs, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb);
+            break;
+
+        // Store with update (displacement)
+        case PPCInsnType::STBU:
+            emit("ctx->r[%u] += %d; MEM_WRITE8(ctx->r[%u], (uint8_t)ctx->r[%u]);",
+                 insn.ra, insn.simm, insn.ra, insn.rs);
+            break;
+        case PPCInsnType::STHU:
+            emit("ctx->r[%u] += %d; MEM_WRITE16(ctx->r[%u], (uint16_t)ctx->r[%u]);",
+                 insn.ra, insn.simm, insn.ra, insn.rs);
+            break;
+
+        // ==== Load Indexed (missing) ====
+        case PPCInsnType::LHAX:
+            emit("ctx->r[%u] = (uint32_t)(int32_t)(int16_t)MEM_READ16(%s + ctx->r[%u]);",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb);
+            break;
+        case PPCInsnType::LHAUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; ctx->r[%u] = (uint32_t)(int32_t)(int16_t)MEM_READ16(ctx->r[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.rd, insn.ra);
+            break;
+
+        // Load with update (indexed)
+        case PPCInsnType::LBZUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; ctx->r[%u] = MEM_READ8(ctx->r[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.rd, insn.ra);
+            break;
+        case PPCInsnType::LHZUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; ctx->r[%u] = MEM_READ16(ctx->r[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.rd, insn.ra);
+            break;
+        case PPCInsnType::LWZUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; ctx->r[%u] = MEM_READ32(ctx->r[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.rd, insn.ra);
+            break;
+
+        // Load with update (displacement, missing forms)
+        case PPCInsnType::LHAU:
+            emit("ctx->r[%u] += %d; ctx->r[%u] = (uint32_t)(int32_t)(int16_t)MEM_READ16(ctx->r[%u]);",
+                 insn.ra, insn.simm, insn.rd, insn.ra);
+            break;
+
+        // Load byte-reversed
+        case PPCInsnType::LHBRX:
+            emit("{ uint16_t v = MEM_READ16(%s + ctx->r[%u]); ctx->r[%u] = (v >> 8) | (v << 8); }",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb, insn.rd);
+            break;
+        case PPCInsnType::LWBRX:
+            emit("{ uint32_t v = MEM_READ32(%s + ctx->r[%u]); ctx->r[%u] = (v >> 24) | ((v >> 8) & 0xFF00) | ((v << 8) & 0xFF0000) | (v << 24); }",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb, insn.rd);
+            break;
+
+        // ==== Float Load/Store Indexed ====
+        case PPCInsnType::LFSX:
+            emit("ctx->f[%u] = (double)MEM_READF32(%s + ctx->r[%u]); ctx->ps[%u][0] = ctx->ps[%u][1] = MEM_READF32(%s + ctx->r[%u]);",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb,
+                 insn.rd, insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb);
+            break;
+        case PPCInsnType::LFDX:
+            emit("ctx->f[%u] = MEM_READF64(%s + ctx->r[%u]);",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb);
+            break;
+        case PPCInsnType::STFSX:
+            emit("MEM_WRITEF32(%s + ctx->r[%u], (float)ctx->f[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb, insn.rs);
+            break;
+        case PPCInsnType::STFDX:
+            emit("MEM_WRITEF64(%s + ctx->r[%u], ctx->f[%u]);",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb, insn.rs);
+            break;
+
+        // Float load/store with update
+        case PPCInsnType::LFSU:
+            emit("ctx->r[%u] += %d; ctx->f[%u] = (double)MEM_READF32(ctx->r[%u]); ctx->ps[%u][0] = ctx->ps[%u][1] = (float)ctx->f[%u];",
+                 insn.ra, insn.simm, insn.rd, insn.ra, insn.rd, insn.rd, insn.rd);
+            break;
+        case PPCInsnType::LFDU:
+            emit("ctx->r[%u] += %d; ctx->f[%u] = MEM_READF64(ctx->r[%u]);",
+                 insn.ra, insn.simm, insn.rd, insn.ra);
+            break;
+        case PPCInsnType::STFSU:
+            emit("ctx->r[%u] += %d; MEM_WRITEF32(ctx->r[%u], (float)ctx->f[%u]);",
+                 insn.ra, insn.simm, insn.ra, insn.rs);
+            break;
+        case PPCInsnType::STFDU:
+            emit("ctx->r[%u] += %d; MEM_WRITEF64(ctx->r[%u], ctx->f[%u]);",
+                 insn.ra, insn.simm, insn.ra, insn.rs);
+            break;
+
+        // Float indexed with update
+        case PPCInsnType::LFSUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; ctx->f[%u] = (double)MEM_READF32(ctx->r[%u]); ctx->ps[%u][0] = ctx->ps[%u][1] = (float)ctx->f[%u];",
+                 insn.ra, insn.ra, insn.rb, insn.rd, insn.ra, insn.rd, insn.rd, insn.rd);
+            break;
+        case PPCInsnType::LFDUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; ctx->f[%u] = MEM_READF64(ctx->r[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.rd, insn.ra);
+            break;
+        case PPCInsnType::STFSUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITEF32(ctx->r[%u], (float)ctx->f[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            break;
+        case PPCInsnType::STFDUX:
+            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITEF64(ctx->r[%u], ctx->f[%u]);",
+                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            break;
+
+        // ==== Float (missing) ====
+        case PPCInsnType::FNABS:
+            emit("ctx->f[%u] = -fabs(ctx->f[%u]);", insn.rd, insn.rb);
+            break;
+        case PPCInsnType::FNMADD:
+            emit("ctx->f[%u] = -(ctx->f[%u] * ctx->f[%u] + ctx->f[%u]);", insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::FNMSUB:
+            emit("ctx->f[%u] = -(ctx->f[%u] * ctx->f[%u] - ctx->f[%u]);", insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::FCTIW:
+            emit("{ int32_t v = (int32_t)ctx->f[%u]; memcpy(&ctx->f[%u], &(uint64_t){(uint64_t)(uint32_t)v}, 8); }",
+                 insn.rb, insn.rd);
+            break;
+        case PPCInsnType::MFFS:
+            emit("{ uint64_t v = (uint64_t)ctx->fpscr; memcpy(&ctx->f[%u], &v, 8); }", insn.rd);
+            break;
+        case PPCInsnType::MTFSF:
+            emit("{ uint64_t v; memcpy(&v, &ctx->f[%u], 8); ctx->fpscr = (uint32_t)v; }", insn.rb);
+            break;
+
+        // ==== Paired Singles Quantized Load/Store ====
+        // For GQR=0 (most common), quantization type is float and scale is 1.
+        // We emit a runtime helper call that reads the GQR register.
+        case PPCInsnType::PSQ_L:
+            if (insn.psq_w) {
+                emit("ctx->ps[%u][0] = PSQ_LOAD_ONE(%s + %d, ctx->gqr[%u]); ctx->ps[%u][1] = 1.0f;",
+                     insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0",
+                     insn.simm, insn.psq_i, insn.rd);
+            } else {
+                emit("PSQ_LOAD_PAIR(&ctx->ps[%u][0], &ctx->ps[%u][1], %s + %d, ctx->gqr[%u]);",
+                     insn.rd, insn.rd,
+                     insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0",
+                     insn.simm, insn.psq_i);
+            }
+            break;
+        case PPCInsnType::PSQ_LU:
+            emit("ctx->r[%u] += %d;", insn.ra, insn.simm);
+            if (insn.psq_w) {
+                emit("ctx->ps[%u][0] = PSQ_LOAD_ONE(ctx->r[%u], ctx->gqr[%u]); ctx->ps[%u][1] = 1.0f;",
+                     insn.rd, insn.ra, insn.psq_i, insn.rd);
+            } else {
+                emit("PSQ_LOAD_PAIR(&ctx->ps[%u][0], &ctx->ps[%u][1], ctx->r[%u], ctx->gqr[%u]);",
+                     insn.rd, insn.rd, insn.ra, insn.psq_i);
+            }
+            break;
+        case PPCInsnType::PSQ_ST:
+            if (insn.psq_w) {
+                emit("PSQ_STORE_ONE(ctx->ps[%u][0], %s + %d, ctx->gqr[%u]);",
+                     insn.rs, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0",
+                     insn.simm, insn.psq_i);
+            } else {
+                emit("PSQ_STORE_PAIR(ctx->ps[%u][0], ctx->ps[%u][1], %s + %d, ctx->gqr[%u]);",
+                     insn.rs, insn.rs,
+                     insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0",
+                     insn.simm, insn.psq_i);
+            }
+            break;
+        case PPCInsnType::PSQ_STU:
+            emit("ctx->r[%u] += %d;", insn.ra, insn.simm);
+            if (insn.psq_w) {
+                emit("PSQ_STORE_ONE(ctx->ps[%u][0], ctx->r[%u], ctx->gqr[%u]);",
+                     insn.rs, insn.ra, insn.psq_i);
+            } else {
+                emit("PSQ_STORE_PAIR(ctx->ps[%u][0], ctx->ps[%u][1], ctx->r[%u], ctx->gqr[%u]);",
+                     insn.rs, insn.rs, insn.ra, insn.psq_i);
+            }
+            break;
+
+        // ==== Paired Singles (missing operations) ====
+        case PPCInsnType::PS_NMADD:
+            emit("ctx->ps[%u][0] = -(ctx->ps[%u][0] * ctx->ps[%u][0] + ctx->ps[%u][0]); ctx->ps[%u][1] = -(ctx->ps[%u][1] * ctx->ps[%u][1] + ctx->ps[%u][1]);",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb, insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::PS_NMSUB:
+            emit("ctx->ps[%u][0] = -(ctx->ps[%u][0] * ctx->ps[%u][0] - ctx->ps[%u][0]); ctx->ps[%u][1] = -(ctx->ps[%u][1] * ctx->ps[%u][1] - ctx->ps[%u][1]);",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb, insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::PS_SEL:
+            emit("ctx->ps[%u][0] = (ctx->ps[%u][0] >= 0.0f) ? ctx->ps[%u][0] : ctx->ps[%u][0]; ctx->ps[%u][1] = (ctx->ps[%u][1] >= 0.0f) ? ctx->ps[%u][1] : ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb, insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::PS_SUM0:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] + ctx->ps[%u][1]; ctx->ps[%u][1] = ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rb, insn.rd, insn.rc_reg);
+            break;
+        case PPCInsnType::PS_SUM1:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][0] + ctx->ps[%u][1];",
+                 insn.rd, insn.rc_reg, insn.rd, insn.ra, insn.rb);
+            break;
+        case PPCInsnType::PS_MADDS0:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] * ctx->ps[%u][0] + ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1] * ctx->ps[%u][0] + ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb, insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::PS_MADDS1:
+            emit("ctx->ps[%u][0] = ctx->ps[%u][0] * ctx->ps[%u][1] + ctx->ps[%u][0]; ctx->ps[%u][1] = ctx->ps[%u][1] * ctx->ps[%u][1] + ctx->ps[%u][1];",
+                 insn.rd, insn.ra, insn.rc_reg, insn.rb, insn.rd, insn.ra, insn.rc_reg, insn.rb);
+            break;
+        case PPCInsnType::PS_NABS:
+            emit("ctx->ps[%u][0] = -fabsf(ctx->ps[%u][0]); ctx->ps[%u][1] = -fabsf(ctx->ps[%u][1]);",
+                 insn.rd, insn.rb, insn.rd, insn.rb);
+            break;
+        case PPCInsnType::PS_RSQRTE:
+            emit("ctx->ps[%u][0] = 1.0f / sqrtf(ctx->ps[%u][0]); ctx->ps[%u][1] = 1.0f / sqrtf(ctx->ps[%u][1]);",
+                 insn.rd, insn.rb, insn.rd, insn.rb);
+            break;
+        case PPCInsnType::PS_CMPU0:
+            emit("{ float a = ctx->ps[%u][0]; float b = ctx->ps[%u][0]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : (a == b) ? 2 : 1; ctx->set_cr_field(%u, c); }",
+                 insn.ra, insn.rb, insn.crfd);
+            break;
+        case PPCInsnType::PS_CMPU1:
+            emit("{ float a = ctx->ps[%u][1]; float b = ctx->ps[%u][1]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : (a == b) ? 2 : 1; ctx->set_cr_field(%u, c); }",
+                 insn.ra, insn.rb, insn.crfd);
+            break;
+        case PPCInsnType::PS_CMPO0:
+            emit("{ float a = ctx->ps[%u][0]; float b = ctx->ps[%u][0]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : (a == b) ? 2 : 1; ctx->set_cr_field(%u, c); }",
+                 insn.ra, insn.rb, insn.crfd);
+            break;
+        case PPCInsnType::PS_CMPO1:
+            emit("{ float a = ctx->ps[%u][1]; float b = ctx->ps[%u][1]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : (a == b) ? 2 : 1; ctx->set_cr_field(%u, c); }",
+                 insn.ra, insn.rb, insn.crfd);
+            break;
+
+        // ==== Sync/Atomic ====
+        case PPCInsnType::LWARX:
+            emit("ctx->r[%u] = MEM_READ32(%s + ctx->r[%u]); // lwarx (reservation ignored)",
+                 insn.rd, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb);
+            break;
+        case PPCInsnType::STWCX:
+            emit("MEM_WRITE32(%s + ctx->r[%u], ctx->r[%u]); ctx->set_cr_field(0, 0x2 | (ctx->xer_so() ? 1 : 0)); // stwcx. (always succeeds)",
+                 insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb, insn.rs);
+            break;
+
+        // ==== System ====
+        case PPCInsnType::SC:
+            emit("// sc (system call - not expected in game code)");
+            break;
+        case PPCInsnType::RFI:
+            emit("return; // rfi (return from interrupt)");
+            break;
+        case PPCInsnType::TWI:
+        case PPCInsnType::TW:
+            emit("// %s (trap - ignored)", insn.mnemonic.c_str());
+            break;
+        case PPCInsnType::MFMSR:
+            emit("ctx->r[%u] = 0; // mfmsr (supervisor, no-op)", insn.rd);
+            break;
+        case PPCInsnType::MTMSR:
+            emit("// mtmsr r%u (supervisor, no-op)", insn.rs);
+            break;
+        case PPCInsnType::DCBI:
+        case PPCInsnType::DCBZ_L:
+        case PPCInsnType::TLBIE:
+        case PPCInsnType::TLBSYNC:
+            emit("// %s (supervisor/cache, no-op)", insn.mnemonic.c_str());
+            break;
+
         // ==== SPR Access ====
         case PPCInsnType::MFSPR:
             if (insn.spr == 8)       emit("ctx->r[%u] = ctx->lr;", insn.rd);
@@ -598,7 +958,7 @@ namespace ww {
             break;
 
         case PPCInsnType::DCBZ:
-            emit("memset(mem->translate(ctx->r[%u] + ctx->r[%u]) & ~31), 0, 32); // dcbz",
+            emit("memset((void*)((uintptr_t)mem->translate(ctx->r[%u] + ctx->r[%u]) & ~31), 0, 32); // dcbz",
                  insn.ra, insn.rb);
             break;
 
@@ -632,9 +992,58 @@ void emit_file_header(FILE* out) {
     fprintf(out, "#define MEM_WRITE32(addr, v)   g_mem.write32(addr, v)\n");
     fprintf(out, "#define MEM_WRITEF32(addr, v)  g_mem.writef32(addr, v)\n");
     fprintf(out, "#define MEM_WRITEF64(addr, v)  g_mem.writef64(addr, v)\n\n");
+    fprintf(out, "// Count leading zeros\n");
+    fprintf(out, "#ifndef PPC_CNTLZW\n");
+    fprintf(out, "#ifdef _MSC_VER\n");
+    fprintf(out, "#include <intrin.h>\n");
+    fprintf(out, "static inline uint32_t PPC_CNTLZW(uint32_t v) { unsigned long idx; return _BitScanReverse(&idx, v) ? (31 - idx) : 32; }\n");
+    fprintf(out, "#else\n");
+    fprintf(out, "static inline uint32_t PPC_CNTLZW(uint32_t v) { return v ? __builtin_clz(v) : 32; }\n");
+    fprintf(out, "#endif\n");
+    fprintf(out, "#endif\n\n");
     fprintf(out, "// Indirect call/jump\n");
     fprintf(out, "#define CALL_INDIRECT(addr, ctx, mem) g_func_table.call(addr, ctx, mem)\n");
     fprintf(out, "#define JUMP_INDIRECT(addr) { /* TODO: switch table */ }\n\n");
+    fprintf(out, "// Paired singles quantized load/store helpers\n");
+    fprintf(out, "// GQR format: bits 0-2 = store type, 8-13 = store scale, 16-18 = load type, 24-29 = load scale\n");
+    fprintf(out, "// Type: 0=float, 4=u8, 5=u16, 6=s8, 7=s16\n");
+    fprintf(out, "static inline float PSQ_LOAD_ONE(uint32_t addr, uint32_t gqr) {\n");
+    fprintf(out, "    uint32_t type = (gqr >> 16) & 7;\n");
+    fprintf(out, "    if (type == 0) return MEM_READF32(addr);\n");
+    fprintf(out, "    float scale = (float)(1 << ((gqr >> 24) & 0x3F));\n");
+    fprintf(out, "    if (type == 4) return (float)MEM_READ8(addr) / scale;\n");
+    fprintf(out, "    if (type == 5) return (float)MEM_READ16(addr) / scale;\n");
+    fprintf(out, "    if (type == 6) return (float)(int8_t)MEM_READ8(addr) / scale;\n");
+    fprintf(out, "    if (type == 7) return (float)(int16_t)MEM_READ16(addr) / scale;\n");
+    fprintf(out, "    return 0.0f;\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static inline void PSQ_LOAD_PAIR(float* ps0, float* ps1, uint32_t addr, uint32_t gqr) {\n");
+    fprintf(out, "    uint32_t type = (gqr >> 16) & 7;\n");
+    fprintf(out, "    if (type == 0) { *ps0 = MEM_READF32(addr); *ps1 = MEM_READF32(addr + 4); return; }\n");
+    fprintf(out, "    float scale = (float)(1 << ((gqr >> 24) & 0x3F));\n");
+    fprintf(out, "    if (type == 4) { *ps0 = (float)MEM_READ8(addr) / scale; *ps1 = (float)MEM_READ8(addr+1) / scale; }\n");
+    fprintf(out, "    else if (type == 5) { *ps0 = (float)MEM_READ16(addr) / scale; *ps1 = (float)MEM_READ16(addr+2) / scale; }\n");
+    fprintf(out, "    else if (type == 6) { *ps0 = (float)(int8_t)MEM_READ8(addr) / scale; *ps1 = (float)(int8_t)MEM_READ8(addr+1) / scale; }\n");
+    fprintf(out, "    else if (type == 7) { *ps0 = (float)(int16_t)MEM_READ16(addr) / scale; *ps1 = (float)(int16_t)MEM_READ16(addr+2) / scale; }\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static inline void PSQ_STORE_ONE(float val, uint32_t addr, uint32_t gqr) {\n");
+    fprintf(out, "    uint32_t type = gqr & 7;\n");
+    fprintf(out, "    if (type == 0) { MEM_WRITEF32(addr, val); return; }\n");
+    fprintf(out, "    float scale = (float)(1 << ((gqr >> 8) & 0x3F));\n");
+    fprintf(out, "    if (type == 4) MEM_WRITE8(addr, (uint8_t)(val * scale));\n");
+    fprintf(out, "    else if (type == 5) MEM_WRITE16(addr, (uint16_t)(val * scale));\n");
+    fprintf(out, "    else if (type == 6) MEM_WRITE8(addr, (uint8_t)(int8_t)(val * scale));\n");
+    fprintf(out, "    else if (type == 7) MEM_WRITE16(addr, (uint16_t)(int16_t)(val * scale));\n");
+    fprintf(out, "}\n");
+    fprintf(out, "static inline void PSQ_STORE_PAIR(float v0, float v1, uint32_t addr, uint32_t gqr) {\n");
+    fprintf(out, "    uint32_t type = gqr & 7;\n");
+    fprintf(out, "    if (type == 0) { MEM_WRITEF32(addr, v0); MEM_WRITEF32(addr + 4, v1); return; }\n");
+    fprintf(out, "    float scale = (float)(1 << ((gqr >> 8) & 0x3F));\n");
+    fprintf(out, "    if (type == 4) { MEM_WRITE8(addr, (uint8_t)(v0 * scale)); MEM_WRITE8(addr+1, (uint8_t)(v1 * scale)); }\n");
+    fprintf(out, "    else if (type == 5) { MEM_WRITE16(addr, (uint16_t)(v0 * scale)); MEM_WRITE16(addr+2, (uint16_t)(v1 * scale)); }\n");
+    fprintf(out, "    else if (type == 6) { MEM_WRITE8(addr, (uint8_t)(int8_t)(v0 * scale)); MEM_WRITE8(addr+1, (uint8_t)(int8_t)(v1 * scale)); }\n");
+    fprintf(out, "    else if (type == 7) { MEM_WRITE16(addr, (uint16_t)(int16_t)(v0 * scale)); MEM_WRITE16(addr+2, (uint16_t)(int16_t)(v1 * scale)); }\n");
+    fprintf(out, "}\n\n");
 }
 
 } // namespace ww
