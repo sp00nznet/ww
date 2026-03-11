@@ -114,14 +114,46 @@ int main(int argc, char** argv) {
     std::string mkdir_cmd = "mkdir -p " + output_dir;
     system(mkdir_cmd.c_str());
 
-    // Emit one .c file per function (for faster compilation)
-    // Group into files of ~100 functions each
+    // Group functions into files of ~200 each for parallel compilation
     int file_index = 0;
     int func_count = 0;
     FILE* current_file = nullptr;
+    static const int FUNCS_PER_FILE = 200;
+
+    // Also generate the forward declarations header and registration table
+    {
+        char funcs_path[256];
+        snprintf(funcs_path, sizeof(funcs_path), "%s/recomp_funcs.h", output_dir.c_str());
+        FILE* funcs_hdr = fopen(funcs_path, "w");
+        if (funcs_hdr) {
+            fprintf(funcs_hdr, "#pragma once\n");
+            fprintf(funcs_hdr, "// Auto-generated: forward declarations for all recompiled functions\n");
+            fprintf(funcs_hdr, "#include \"recomp_common.h\"\n\n");
+            for (auto& [addr, func] : cfg.functions) {
+                std::string fname = syms.get_name(addr);
+                func.name = fname;
+                fprintf(funcs_hdr, "void %s(PPCContext* ctx, Memory* mem);\n", fname.c_str());
+            }
+            fclose(funcs_hdr);
+        }
+
+        char reg_path[256];
+        snprintf(reg_path, sizeof(reg_path), "%s/recomp_register.cpp", output_dir.c_str());
+        FILE* reg_file = fopen(reg_path, "w");
+        if (reg_file) {
+            fprintf(reg_file, "// Auto-generated: registers all recompiled functions into the FuncTable\n");
+            fprintf(reg_file, "#include \"recomp_funcs.h\"\n\n");
+            fprintf(reg_file, "void register_recompiled_functions(FuncTable& table) {\n");
+            for (auto& [addr, func] : cfg.functions) {
+                fprintf(reg_file, "    table.register_func(0x%08X, %s);\n", addr, func.name.c_str());
+            }
+            fprintf(reg_file, "}\n");
+            fclose(reg_file);
+        }
+    }
 
     for (auto& [addr, func] : cfg.functions) {
-        if (func_count % 100 == 0) {
+        if (func_count % FUNCS_PER_FILE == 0) {
             if (current_file) fclose(current_file);
             char filename[256];
             snprintf(filename, sizeof(filename), "%s/recomp_%04d.cpp",
@@ -132,30 +164,6 @@ int main(int argc, char** argv) {
                 return 1;
             }
             emit_file_header(current_file);
-        }
-
-        // Get function name
-        std::string fname = syms.get_name(addr);
-        func.name = fname;
-
-        // Forward declare
-        fprintf(current_file, "void %s(PPCContext* ctx, Memory* mem);\n", fname.c_str());
-        func_count++;
-    }
-
-    // Now emit function bodies
-    file_index = 0;
-    func_count = 0;
-    if (current_file) fclose(current_file);
-    current_file = nullptr;
-
-    for (auto& [addr, func] : cfg.functions) {
-        if (func_count % 100 == 0) {
-            if (current_file) fclose(current_file);
-            char filename[256];
-            snprintf(filename, sizeof(filename), "%s/recomp_%04d.cpp",
-                     output_dir.c_str(), file_index++);
-            current_file = fopen(filename, "a"); // Append after declarations
         }
 
         fprintf(current_file, "\n// ---- %s @ 0x%08X ----\n", func.name.c_str(), addr);

@@ -83,6 +83,7 @@ runs at full native speed with all compiler optimizations applied.
 | **CFG Builder** | Identifies functions and basic blocks from binary | Done |
 | **PPC-to-C Emitter** | Translates each PPC instruction to C code | Done |
 | **Runtime** | CPU context (GPR/FPR/PS/CR/SPR), memory, function dispatch | Done |
+| **Function Table** | Auto-generated registration of all 8,148 functions for indirect dispatch | Done |
 | **GX Graphics** | GameCube GX API -> Direct3D 11 translation | In Progress |
 | **TEV Shader Gen** | Generates HLSL shaders from TEV stage configurations | In Progress |
 | **Texture Decoder** | Decodes GC texture formats (I4/I8/IA/RGB565/RGB5A3/CMPR) | Done |
@@ -183,7 +184,25 @@ the pipeline-complete stage. The recompiler can process the full Wind Waker
 DOL, generate C code for all discovered functions, and the runtime provides
 the hardware abstraction needed to run it.
 
-Current focus areas:
+### Recompiler Statistics
+
+| Metric | Value |
+|--------|-------|
+| DOL Size | 4.16 MB |
+| Entry Point | 0x80003140 |
+| Functions Discovered | 8,148 |
+| Total Instructions | 348,958 |
+| Instruction Coverage | 99.99% (1 unknown encoding) |
+| Output Files | 41 translation units + registration table |
+| Supported Instruction Classes | Integer, Float, Paired Singles, Load/Store, Branch, CR, System |
+
+The recompiler achieves near-perfect instruction coverage across the full
+Gekko ISA, including all Paired Singles SIMD instructions and quantized
+load/store operations with GQR-based dequantization.
+
+### Current Focus
+
+- Compiling the recompiled output against the runtime (MSVC C++20)
 - GX TEV stage -> HLSL shader pipeline
 - Display list processing
 - REL (actor/scene module) loading and relocation

@@ -55,6 +55,27 @@ if(WW_BUILD_RUNTIME)
     target_include_directories(ww_runtime PUBLIC include)
     target_link_libraries(ww_runtime PUBLIC gcrecomp_runtime)
 
+    # ===========================================================================
+    # Recompiled Game Code - Auto-generated PPC->C translation
+    #
+    # These are the 8,148 recompiled Wind Waker functions split across
+    # multiple translation units for parallel compilation.
+    # ===========================================================================
+    option(WW_BUILD_RECOMPILED "Build the recompiled game code" ON)
+    if(WW_BUILD_RECOMPILED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/recompiled/recomp_funcs.h")
+        file(GLOB RECOMP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/recompiled/recomp_*.cpp")
+        add_library(ww_recompiled STATIC ${RECOMP_SOURCES})
+        target_include_directories(ww_recompiled PRIVATE
+            include
+            "${CMAKE_CURRENT_SOURCE_DIR}/recompiled"
+        )
+        target_link_libraries(ww_recompiled PRIVATE ww_runtime)
+        # Large translation units need big object file support on MSVC
+        if(MSVC)
+            target_compile_options(ww_recompiled PRIVATE /bigobj)
+        endif()
+    endif()
+
     # Main executable (links recompiled code + runtime + gcrecomp libraries)
     add_executable(ww_launcher
         src/main.cpp
@@ -65,6 +86,9 @@ if(WW_BUILD_RUNTIME)
         gcrecomp_audio
         gcrecomp_input
     )
+    if(TARGET ww_recompiled)
+        target_link_libraries(ww_launcher PRIVATE ww_recompiled)
+    endif()
     target_include_directories(ww_launcher PRIVATE include)
     if(WIN32)
         target_link_libraries(ww_launcher PRIVATE d3d11 d3dcompiler dxgi)

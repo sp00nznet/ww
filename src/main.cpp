@@ -16,6 +16,9 @@
 #include <cstdio>
 #include <cstdlib>
 
+// Auto-generated function registration (from recompiler output)
+extern void register_recompiled_functions(ww::FuncTable& table);
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -58,6 +61,10 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Failed to initialize runtime\n");
         return 1;
     }
+
+    // ---- Register Recompiled Functions ----
+    printf("[*] Registering %d recompiled functions...\n", 8148);
+    register_recompiled_functions(g_func_table);
 
     // ---- Initialize Graphics ----
     printf("[*] Initializing graphics (D3D11)...\n");
