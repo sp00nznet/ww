@@ -119,7 +119,11 @@ cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --target ww_recompiler --config Release
 
 # Recompile the game (you need the DOL extracted from your ISO)
-./build/Release/ww_recompiler.exe path/to/main.dol --output recompiled/
+./build/Release/ww_recompiler.exe main.dol --extra-funcs extra_funcs.txt --output recompiled/
+
+# IMPORTANT: After recompiling, patch recomp_0018.cpp:
+#   In func_800AD17C, comment out the calls to func_8025214C and func_80252020
+#   (these contain VI register busy-waits that hang without HW emulation)
 
 # Build the game runtime + recompiled code
 cmake --build build --target ww_launcher --config Release
@@ -200,13 +204,26 @@ The recompiler achieves near-perfect instruction coverage across the full
 Gekko ISA, including all Paired Singles SIMD instructions and quantized
 load/store operations with GQR-based dequantization.
 
+### Runtime Status
+
+The game is **running**:
+
+- All 41 translation units compile with MSVC (C++20)
+- DOL loaded, all 100 static constructors complete
+- Game framework (`fapGm_Create`) initialized successfully
+- Main game loop running at ~60 FPS with native fapGm layer dispatch
+- VRetrace timing gate bypassed (no HW interrupt emulation needed)
+- Display init busy-waits (VI register polling) stubbed out
+- PPCHalt infinite spin replaced with cooperative yield
+- Only 3 unresolved indirect calls remain (data/BSS section addresses — not recompilable)
+
 ### Current Focus
 
-- Compiling the recompiled output against the runtime (MSVC C++20)
-- GX TEV stage -> HLSL shader pipeline
+- GX TEV stage -> HLSL shader pipeline (getting pixels on screen)
 - Display list processing
 - REL (actor/scene module) loading and relocation
-- OS function coverage for game boot sequence
+- Expanding OS HLE coverage (thread scheduling, DVD file access)
+- Resolving remaining indirect call targets
 
 ## Standing on the Shoulders of Giants
 
