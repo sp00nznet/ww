@@ -58,6 +58,57 @@ extern void func_800078C0(PPCContext* ctx, Memory* mem);  // mDoRst_Execute (res
 extern void func_80007224(PPCContext* ctx, Memory* mem);  // mDoAud_Execute (audio)
 extern void func_800231E4(PPCContext* ctx, Memory* mem);  // fapGm_Execute (framework execute!)
 extern void func_80006264(PPCContext* ctx, Memory* mem);  // main loop cleanup
+extern void func_8003EC84(PPCContext* ctx, Memory* mem);  // fapGm layer dispatch
+extern void func_802539A4(PPCContext* ctx, Memory* mem);  // fapGm sub-call 1
+extern void func_8003EBD4(PPCContext* ctx, Memory* mem);  // fapGm sub-call 2
+extern void func_8024135C(PPCContext* ctx, Memory* mem);
+extern void func_8003D314(PPCContext* ctx, Memory* mem);
+extern void func_8003FF00(PPCContext* ctx, Memory* mem);
+extern void func_8003D150(PPCContext* ctx, Memory* mem);
+extern void func_8003D7E0(PPCContext* ctx, Memory* mem);
+extern void func_800404CC(PPCContext* ctx, Memory* mem);
+extern void func_802449AC(PPCContext* ctx, Memory* mem);  // fapGm counter update
+
+// Addresses of constructors known to hang (infinite loops or HW dependencies)
+static const uint32_t SKIP_CTORS[] = {
+    // 0x800559E8 — was skipped, now traced via instrumented recomp_0009.cpp
+    0,
+};
+
+static bool should_skip_ctor(uint32_t addr) {
+    for (int i = 0; SKIP_CTORS[i]; i++) {
+        if (SKIP_CTORS[i] == addr) return true;
+    }
+    return false;
+}
+
+// Replacement for func_80309A88 (__init_user loop) — traces each static constructor
+static void traced_init_user(PPCContext* ctx, Memory* mem) {
+    // The constructor table starts at 0x80338680 (data2 section)
+    uint32_t table_addr = 0x80338680;
+    int count = 0, skipped = 0;
+    while (true) {
+        uint32_t ctor_addr = mem->read32(table_addr);
+        if (ctor_addr == 0) break;
+        count++;
+        if (should_skip_ctor(ctor_addr)) {
+            skipped++;
+        } else {
+            g_func_table.call(ctor_addr, ctx, mem);
+        }
+        table_addr += 4;
+    }
+    printf("[*] %d static constructors processed (%d skipped)\n", count, skipped);
+}
+
+// Replacement for func_8003EBD4 (frame timing gate)
+// The original calls func_80312300 (VRetrace check) which reads interrupt-driven
+// VBlank state. Without interrupt emulation, it always returns 0 = "no frame".
+// The logic then clears the frame-ready counter and returns 0, preventing any
+// game processing. We bypass all of that and always return 1 = "process frame".
+static void frame_gate_replacement(PPCContext* ctx, Memory* mem) {
+    ctx->r[3] = 1;  // Always signal "frame ready"
+}
 
 // Replacement for func_8030150C (PPCHalt / idle loop)
 // The original is an infinite spin loop. We replace it with a sleep+return
@@ -184,10 +235,10 @@ int main(int argc, char** argv) {
     // Note: func_8030173C (DBInit/OSInit) skipped — it does hardware register
     // init (writing to 0xCC000000+) that hangs without full HW emulation.
 
-    // Static constructors — EXI HLE prevents EXI/SRAM init hangs
+    // Static constructors — use traced replacement to identify hangs
     printf("[*] Running static constructors (__init_user)...\n");
     fflush(stdout);
-    func_80309A68(&g_ctx, &g_mem);
+    traced_init_user(&g_ctx, &g_mem);
     printf("[*] Static constructors complete.\n");
     fflush(stdout);
 
@@ -203,6 +254,8 @@ int main(int argc, char** argv) {
     // ---- Override problematic functions ----
     // PPCHalt (0x8030150C): infinite spin loop → return immediately
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
+    // Frame timing gate: always return "process frame"
+    g_func_table.register_func(0x8003EBD4, frame_gate_replacement);
 
     // ---- Initialize game framework (from main01__Fv = func_80006338) ----
     // main01 does: mDoCPd_Create, mDoGph_Create, mDoRst_Create, fapGm_Create,
@@ -240,10 +293,26 @@ int main(int argc, char** argv) {
             // 2. func_80007224 — mDoAud_Execute (audio processing)
             // 3. func_800231E4 — fapGm_Execute (game framework: actors, scenes!)
             // 4. func_80006264 — main loop cleanup
-            func_800078C0(&g_ctx, &g_mem);
-            func_80007224(&g_ctx, &g_mem);
-            func_800231E4(&g_ctx, &g_mem);
-            func_80006264(&g_ctx, &g_mem);
+            func_800078C0(&g_ctx, &g_mem);  // mDoRst_Execute
+            func_80007224(&g_ctx, &g_mem);  // mDoAud_Execute
+
+            // Native fapGm_Execute — bypass VRetrace gate
+            // func_8003EBD4 checks VRetrace interrupt state which is never set
+            // without hardware interrupt emulation. We call the layer dispatch
+            // sub-functions directly, forcing frame processing every iteration.
+            {
+                func_802539A4(&g_ctx, &g_mem);
+                func_8024135C(&g_ctx, &g_mem);
+                func_8003D314(&g_ctx, &g_mem);
+                func_8003FF00(&g_ctx, &g_mem);
+                func_8003D150(&g_ctx, &g_mem);
+                g_ctx.r[3] = 0x8003E370;
+                func_8003D7E0(&g_ctx, &g_mem);
+                // Skip func_800404CC (GX sync callback) — hangs without HW
+            }
+            func_802449AC(&g_ctx, &g_mem);  // fapGm counter update
+
+            func_80006264(&g_ctx, &g_mem);  // main loop cleanup
 
             frame++;
             if (frame <= 5 || frame % 60 == 0) {
