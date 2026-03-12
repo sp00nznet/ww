@@ -13,3 +13,27 @@
 80051E90
 8005637C
 800AD594
+
+# Found at runtime — array constructor callbacks (LR=0x80328B2C)
+8001110C
+80014580
+80055E30
+80055E70
+8006D804
+8006FE54
+80085D74
+80085F68
+8009BFD4
+80190840
+80190844
+801996B4
+80205F14
+80234654
+8026C6FC
+
+# Found at runtime — indirect dispatch (LR=0x8032C330)
+802CBAC8
+802D9328
+8032BD0C
+# Note: 0x803A4EDC, 0x803A2070, 0x8036BF88 are in data/BSS sections,
+# not recompilable — they're runtime-generated trampolines
