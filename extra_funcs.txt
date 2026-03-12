@@ -1,0 +1,15 @@
+# Extra function entry points not discovered by automated scanning
+# These are called indirectly (e.g., via constructor tables, vtables)
+# and were identified at runtime as unresolved indirect call targets.
+
+# Found during static constructor init (batch 1)
+80017D30
+800455A0
+800454FC
+800453BC
+80051F74
+80051FB0
+80051EE4
+80051E90
+8005637C
+800AD594

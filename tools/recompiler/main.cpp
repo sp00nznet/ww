@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 using namespace ww;
 
@@ -37,6 +38,7 @@ static void print_usage(const char* prog) {
     printf("  --output <dir>  Output directory (default: ./recompiled)\n");
     printf("  --info          Print DOL info and exit\n");
     printf("  --stats         Print CFG statistics and exit\n");
+    printf("  --extra-funcs <file>  Force-add function entries (one hex addr per line)\n");
     printf("  --help          Show this help\n");
 }
 
@@ -49,6 +51,7 @@ int main(int argc, char** argv) {
     std::string dol_path;
     std::string map_path;
     std::string csv_path;
+    std::string extra_funcs_path;
     std::string output_dir = "recompiled";
     bool info_only = false;
     bool stats_only = false;
@@ -58,6 +61,8 @@ int main(int argc, char** argv) {
             map_path = argv[++i];
         } else if (strcmp(argv[i], "--csv") == 0 && i + 1 < argc) {
             csv_path = argv[++i];
+        } else if (strcmp(argv[i], "--extra-funcs") == 0 && i + 1 < argc) {
+            extra_funcs_path = argv[++i];
         } else if (strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
             output_dir = argv[++i];
         } else if (strcmp(argv[i], "--info") == 0) {
@@ -102,7 +107,30 @@ int main(int argc, char** argv) {
     // ---- Build CFG ----
     printf("\n[*] Building control flow graph...\n");
     CFG cfg;
-    cfg.build(dol);
+    cfg.scan_targets(dol);
+
+    // Load extra function entries if specified
+    if (!extra_funcs_path.empty()) {
+        FILE* ef = fopen(extra_funcs_path.c_str(), "r");
+        if (ef) {
+            std::vector<uint32_t> extras;
+            char line[256];
+            while (fgets(line, sizeof(line), ef)) {
+                // Skip comments and empty lines
+                if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+                uint32_t addr = 0;
+                if (sscanf(line, "%x", &addr) == 1 && addr != 0) {
+                    extras.push_back(addr);
+                }
+            }
+            fclose(ef);
+            cfg.add_extra_entries(extras);
+        } else {
+            fprintf(stderr, "Warning: Could not open extra-funcs file: %s\n", extra_funcs_path.c_str());
+        }
+    }
+
+    cfg.build_functions(dol);
     cfg.print_stats();
 
     if (stats_only) return 0;
@@ -170,6 +198,7 @@ int main(int argc, char** argv) {
         fprintf(current_file, "void %s(PPCContext* ctx, Memory* mem) {\n", func.name.c_str());
 
         PPCToCEmitter emitter(current_file);
+        emitter.block_addrs = func.block_addrs;
 
         for (uint32_t block_addr : func.block_addrs) {
             auto& block = func.blocks[block_addr];

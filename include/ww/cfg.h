@@ -37,6 +37,9 @@ struct CFG {
     std::set<uint32_t> call_targets;
 
     void build(const DOLFile& dol);
+    void scan_targets(const DOLFile& dol);     // Phase 1: populate call_targets
+    void add_extra_entries(const std::vector<uint32_t>& addrs);
+    void build_functions(const DOLFile& dol);   // Phase 2: build from call_targets
     void discover_functions(const DOLFile& dol);
     void build_blocks(Function& func, const DOLFile& dol);
     void print_stats() const;

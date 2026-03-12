@@ -79,6 +79,7 @@ if(WW_BUILD_RUNTIME)
     # Main executable (links recompiled code + runtime + gcrecomp libraries)
     add_executable(ww_launcher
         src/main.cpp
+        tools/recompiler/dol_parser.cpp
     )
     target_link_libraries(ww_launcher PRIVATE
         ww_runtime

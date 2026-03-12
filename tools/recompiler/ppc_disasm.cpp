@@ -419,6 +419,7 @@ PPCInsn ppc_disasm(uint32_t raw, uint32_t address) {
     case 31: {
         uint32_t xo = PPC_XO(raw);
         insn.rd = PPC_RD(raw);
+        insn.rs = PPC_RD(raw);  // rs occupies same bits as rd (6-10); needed by logical ops
         insn.ra = PPC_RA(raw);
         insn.rb = PPC_RB(raw);
         insn.rc = PPC_RC_FLAG(raw);

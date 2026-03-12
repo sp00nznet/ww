@@ -10,11 +10,15 @@
 // =============================================================================
 
 #include "ww/runtime.h"
+#include "ww/dol.h"
 #include "ww/gx/gx.h"
 #include "ww/audio/audio.h"
 #include "ww/input/input.h"
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <thread>
+#include <atomic>
 
 // Auto-generated function registration (from recompiler output)
 extern void register_recompiled_functions(ww::FuncTable& table);
@@ -33,6 +37,72 @@ using namespace ww;
 
 static const uint32_t WINDOW_WIDTH  = 1280;
 static const uint32_t WINDOW_HEIGHT = 720;
+
+static std::atomic<bool> g_game_running{false};
+
+// Forward declarations for recompiled functions
+extern void func_8030CFB0(PPCContext* ctx, Memory* mem);  // Small init helper
+extern void func_80309A68(PPCContext* ctx, Memory* mem);  // __init_user (static ctors)
+extern void func_80006464(PPCContext* ctx, Memory* mem);  // main()
+
+// From main01__Fv (0x80006338) — the REAL game loop:
+extern void func_80006338(PPCContext* ctx, Memory* mem);  // main01 (init + game loop)
+extern void func_8000C70C(PPCContext* ctx, Memory* mem);  // mDoCPd_Create (controller init)
+extern void func_8000BC94(PPCContext* ctx, Memory* mem);  // mDoGph_Create (graphics init)
+extern void func_80007A70(PPCContext* ctx, Memory* mem);  // mDoRst_Create (reset init)
+extern void func_80023218(PPCContext* ctx, Memory* mem);  // fapGm_Create (framework create)
+extern void func_80022DF8(PPCContext* ctx, Memory* mem);  // framework post-create init
+
+// Per-frame functions from main01's loop:
+extern void func_800078C0(PPCContext* ctx, Memory* mem);  // mDoRst_Execute (reset check)
+extern void func_80007224(PPCContext* ctx, Memory* mem);  // mDoAud_Execute (audio)
+extern void func_800231E4(PPCContext* ctx, Memory* mem);  // fapGm_Execute (framework execute!)
+extern void func_80006264(PPCContext* ctx, Memory* mem);  // main loop cleanup
+
+// Replacement for func_8030150C (PPCHalt / idle loop)
+// The original is an infinite spin loop. We replace it with a sleep+return
+// so the game thread can yield to the host and the main loop can pump messages.
+static void idle_loop_replacement(PPCContext* ctx, Memory* mem) {
+    // Just return immediately — the game main will call us again next frame
+    // via func_80309ADC. This simulates one "frame" of work.
+    ctx->r[3] = 0;
+}
+
+// Load DOL sections into emulated memory
+static bool load_dol_into_memory(const char* path, Memory& mem) {
+    ww::DOLFile dol;
+    if (!dol.load(path)) {
+        fprintf(stderr, "[DOL] Failed to load: %s\n", path);
+        return false;
+    }
+    dol.print_info();
+
+    // Copy each section's data into emulated RAM
+    // DOL data is already big-endian, and Memory stores big-endian bytes
+    for (const auto& sec : dol.sections) {
+        if (sec.size == 0) continue;
+        uint8_t* dst = mem.translate(sec.address);
+        if (dst == mem.ram && sec.address != Memory::MAIN_RAM_BASE) {
+            fprintf(stderr, "[DOL] Section at 0x%08X is out of range, skipping\n", sec.address);
+            continue;
+        }
+        memcpy(dst, sec.data.data(), sec.size);
+        printf("[DOL] Loaded %s%d: 0x%08X - 0x%08X (%u bytes)\n",
+               sec.is_text ? "text" : "data", sec.index,
+               sec.address, sec.address + sec.size, sec.size);
+    }
+
+    // Zero BSS
+    if (dol.bss_size > 0) {
+        uint8_t* bss = mem.translate(dol.bss_address);
+        memset(bss, 0, dol.bss_size);
+        printf("[DOL] Zeroed BSS: 0x%08X - 0x%08X (%u bytes)\n",
+               dol.bss_address, dol.bss_address + dol.bss_size, dol.bss_size);
+    }
+
+    printf("[DOL] All sections loaded.\n");
+    return true;
+}
 
 static void print_banner() {
     printf("\n");
@@ -55,6 +125,10 @@ static void print_banner() {
 int main(int argc, char** argv) {
     print_banner();
 
+    // ---- Determine DOL path ----
+    const char* dol_path = "main.dol";
+    if (argc >= 2) dol_path = argv[1];
+
     // ---- Initialize Runtime ----
     printf("[*] Initializing runtime...\n");
     if (!runtime_init()) {
@@ -62,8 +136,25 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ---- Load DOL into emulated memory ----
+    printf("[*] Loading DOL: %s\n", dol_path);
+    if (!load_dol_into_memory(dol_path, g_mem)) {
+        fprintf(stderr, "Failed to load DOL\n");
+        runtime_shutdown();
+        return 1;
+    }
+
+    // ---- Initialize OS low-memory and HLE ----
+    init_low_memory(&g_mem);
+    register_os_functions();
+
+    // ---- Set CPU registers from __init_registers (func_80003278) ----
+    g_ctx.r[1]  = 0x8040CFA8;  // Stack pointer
+    g_ctx.r[2]  = 0x803FFD00;  // SDA2 base (_SDA2_BASE_)
+    g_ctx.r[13] = 0x803FE0E0;  // SDA base (_SDA_BASE_)
+
     // ---- Register Recompiled Functions ----
-    printf("[*] Registering %d recompiled functions...\n", 8148);
+    printf("[*] Registering recompiled functions...\n");
     register_recompiled_functions(g_func_table);
 
     // ---- Initialize Graphics ----
@@ -83,16 +174,93 @@ int main(int argc, char** argv) {
     printf("[*] Initializing input...\n");
     input::input_init();
 
-    // ---- Main Loop ----
-    printf("[*] Entering main loop. The Great Sea awaits!\n");
+    // ---- Run game initialization ----
+    printf("[*] Running game init...\n");
+
+    // Init helper (sets up SDA-relative globals)
+    func_8030CFB0(&g_ctx, &g_mem);
+    printf("[*] Init helper done.\n");
+
+    // Note: func_8030173C (DBInit/OSInit) skipped — it does hardware register
+    // init (writing to 0xCC000000+) that hangs without full HW emulation.
+
+    // Static constructors — EXI HLE prevents EXI/SRAM init hangs
+    printf("[*] Running static constructors (__init_user)...\n");
+    fflush(stdout);
+    func_80309A68(&g_ctx, &g_mem);
+    printf("[*] Static constructors complete.\n");
+    fflush(stdout);
+
+    // ---- Set up game's bump allocator heap ----
+    printf("[*] Initializing game heap pointer...\n");
+    {
+        uint32_t heap_ptr_addr = 0x803F66C0;  // r13(-31264)
+        uint32_t arena_lo = 0x80400000;
+        g_mem.write32(heap_ptr_addr, arena_lo);
+        printf("[*] Heap pointer at 0x%08X = 0x%08X\n", heap_ptr_addr, arena_lo);
+    }
+
+    // ---- Override problematic functions ----
+    // PPCHalt (0x8030150C): infinite spin loop → return immediately
+    g_func_table.register_func(0x8030150C, idle_loop_replacement);
+
+    // ---- Initialize game framework (from main01__Fv = func_80006338) ----
+    // main01 does: mDoCPd_Create, mDoGph_Create, mDoRst_Create, fapGm_Create,
+    // then enters an infinite loop calling fapGm_Execute each frame.
+    // We skip hardware-dependent init (controller, graphics mode) since we
+    // handle those via host APIs, and run the game framework creation.
+    printf("[*] Initializing game framework...\n");
+    fflush(stdout);
+
+    // Skip mDoCPd_Create (0x8000C70C) — hangs on PAD/SI hardware init
+    // Skip mDoGph_Create (0x8000BC94) — tries to init GX via hardware
+    // Skip mDoRst_Create (0x80007A70) — reset controller, might need HW
+
+    printf("[*]   fapGm_Create (game framework)...\n"); fflush(stdout);
+    func_80023218(&g_ctx, &g_mem);
+    printf("[*]   fapGm_Create done.\n"); fflush(stdout);
+
+    printf("[*]   Framework post-init (func_80022DF8)...\n"); fflush(stdout);
+    func_80022DF8(&g_ctx, &g_mem);
+    printf("[*] Game framework initialized.\n");
+    fflush(stdout);
+
+    // ---- Launch Game Thread ----
+    printf("[*] Launching game thread (main01 loop)...\n");
     printf("[*] (Press ESC to quit)\n\n");
 
-    bool running = true;
-    uint32_t frame = 0;
+    g_game_running = true;
+    std::thread game_thread([&]() {
+        fprintf(stderr, "[*] Entering main game loop (fapGm_Execute per frame)...\n");
+
+        int frame = 0;
+        while (g_game_running) {
+            // Per-frame work from main01's loop:
+            // 1. func_800078C0 — mDoRst_Execute (reset/restart check)
+            // 2. func_80007224 — mDoAud_Execute (audio processing)
+            // 3. func_800231E4 — fapGm_Execute (game framework: actors, scenes!)
+            // 4. func_80006264 — main loop cleanup
+            func_800078C0(&g_ctx, &g_mem);
+            func_80007224(&g_ctx, &g_mem);
+            func_800231E4(&g_ctx, &g_mem);
+            func_80006264(&g_ctx, &g_mem);
+
+            frame++;
+            if (frame <= 5 || frame % 60 == 0) {
+                fprintf(stderr, "[*] Frame %d complete\n", frame);
+            }
+
+            Sleep(16);  // ~60 FPS
+        }
+
+        fprintf(stderr, "[*] Game thread exiting after %d frames.\n", frame);
+    });
+    game_thread.detach();
 
 #ifdef _WIN32
-    while (running) {
-        // Process Windows messages
+    // Main thread: Windows message pump
+    bool running = true;
+    while (running && g_game_running) {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
@@ -104,21 +272,10 @@ int main(int argc, char** argv) {
         }
         if (!running) break;
 
-        // Update input
         input::input_update();
-
-        // Update audio
         audio::audio_update();
-
-        // TODO: Call recompiled game main loop
-        // The game's main function will be:
-        //   func_80003100(&g_ctx, &g_mem);  // Entry point
-        // Which calls through the game's init -> main loop -> render chain
-
-        // Present frame
         gx::GXPresent();
-
-        frame++;
+        Sleep(16);  // ~60 FPS cap
     }
 #endif
 
