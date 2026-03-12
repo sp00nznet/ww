@@ -12,34 +12,99 @@
 namespace ww {
 
 void CFG::build(const DOLFile& dol) {
+    scan_targets(dol);
+    build_functions(dol);
+}
+
+void CFG::scan_targets(const DOLFile& dol) {
     printf("[CFG] Building control flow graph...\n");
 
     // Start with the entry point
     call_targets.insert(dol.entry_point);
 
     // Phase 1: Linear scan for bl (branch-and-link) targets
-    // This catches most direct function calls
+    std::set<uint32_t> tail_call_candidates;
     for (const auto& sec : dol.sections) {
         if (!sec.is_text) continue;
 
         auto insns = ppc_disasm_range(sec.data.data(), sec.address, sec.size);
         for (const auto& insn : insns) {
             if (insn.type == PPCInsnType::B && insn.link) {
-                // bl target -> definitely a function
                 uint32_t target = insn.branch_target;
                 if (dol.is_code(target)) {
                     call_targets.insert(target);
                 }
             }
+            else if (insn.type == PPCInsnType::B && !insn.link) {
+                uint32_t target = insn.branch_target;
+                int32_t offset = (int32_t)target - (int32_t)insn.address;
+                if (dol.is_code(target) && (offset > 0x100 || offset < -0x100)) {
+                    tail_call_candidates.insert(target);
+                }
+            }
         }
     }
 
-    printf("[CFG] Phase 1: Found %zu call targets from bl scan\n", call_targets.size());
+    size_t tail_calls_added = 0;
+    for (uint32_t tc : tail_call_candidates) {
+        if (!call_targets.count(tc)) {
+            call_targets.insert(tc);
+            tail_calls_added++;
+        }
+    }
 
-    // Phase 2: Build functions and basic blocks
+    printf("[CFG] Phase 1: Found %zu call targets from bl scan (+%zu tail calls)\n",
+           call_targets.size() - tail_calls_added, tail_calls_added);
+
+    // Phase 1.5: Scan data sections for function pointers
+    size_t before = call_targets.size();
+    for (const auto& sec : dol.sections) {
+        if (sec.is_text) continue;
+        if (sec.size < 4) continue;
+
+        for (uint32_t off = 0; off + 4 <= sec.size; off += 4) {
+            const uint8_t* p = sec.data.data() + off;
+            uint32_t val = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                           ((uint32_t)p[2] << 8) | p[3];
+
+            if (dol.is_code(val) && (val & 3) == 0) {
+                call_targets.insert(val);
+            }
+        }
+    }
+    printf("[CFG] Phase 1.5: Found %zu additional targets from data scan (%zu total)\n",
+           call_targets.size() - before, call_targets.size());
+
+    // Phase 1.6: Scan code for function prologues (stwu r1, -X(r1) = 0x9421xxxx)
+    before = call_targets.size();
+    for (const auto& sec : dol.sections) {
+        if (!sec.is_text) continue;
+        for (uint32_t off = 0; off + 4 <= sec.size; off += 4) {
+            const uint8_t* p = sec.data.data() + off;
+            uint32_t raw = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                           ((uint32_t)p[2] << 8) | p[3];
+            if ((raw >> 16) == 0x9421) {
+                uint32_t addr = sec.address + off;
+                call_targets.insert(addr);
+            }
+        }
+    }
+    printf("[CFG] Phase 1.6: Found %zu additional targets from prologue scan (%zu total)\n",
+           call_targets.size() - before, call_targets.size());
+}
+
+void CFG::build_functions(const DOLFile& dol) {
     discover_functions(dol);
-
     printf("[CFG] Phase 2: Built %zu functions\n", functions.size());
+}
+
+void CFG::add_extra_entries(const std::vector<uint32_t>& addrs) {
+    size_t added = 0;
+    for (uint32_t addr : addrs) {
+        if (call_targets.insert(addr).second) added++;
+    }
+    printf("[CFG] Added %zu extra function entries (%zu were duplicates)\n",
+           added, addrs.size() - added);
 }
 
 void CFG::discover_functions(const DOLFile& dol) {
@@ -101,14 +166,32 @@ void CFG::build_blocks(Function& func, const DOLFile& dol) {
                     break;
                 }
                 else if (insn.type == PPCInsnType::B && insn.link) {
-                    // Function call — note target but continue this block
+                    // Function call (bl) — continue, execution returns
                     func.calls.insert(insn.branch_target);
+                    func.is_leaf = false;
+                }
+                else if (insn.type == PPCInsnType::BCCTR && insn.link) {
+                    // Indirect call via CTR (bctrl) — continue, execution returns
+                    func.is_leaf = false;
+                }
+                else if (insn.type == PPCInsnType::BCLR && insn.link) {
+                    // Indirect call via LR (blrl) — continue, execution returns
                     func.is_leaf = false;
                 }
                 else if (insn.is_return()) {
                     break;
                 }
-                else if (insn.type == PPCInsnType::BCCTR) {
+                else if (insn.type == PPCInsnType::BCLR && !insn.link) {
+                    // Conditional return via LR — block terminator
+                    // Fall-through is a new block (if condition not met)
+                    uint32_t fall = pc + 4;
+                    if (dol.is_code(fall) && !block_starts.count(fall)) {
+                        block_starts.insert(fall);
+                        work.push(fall);
+                    }
+                    break;
+                }
+                else if (insn.type == PPCInsnType::BCCTR && !insn.link) {
                     // Indirect branch via CTR — could be switch table
                     break;
                 }
@@ -139,6 +222,21 @@ void CFG::build_blocks(Function& func, const DOLFile& dol) {
             block.instructions.push_back(insn);
 
             if (insn.is_branch()) {
+                if (insn.type == PPCInsnType::B && insn.link) {
+                    // Function call (bl) — not a block terminator, execution continues
+                    pc += 4;
+                    continue;
+                }
+                if (insn.type == PPCInsnType::BCLR && insn.link) {
+                    // Indirect call via LR (blrl) — not a block terminator
+                    pc += 4;
+                    continue;
+                }
+                if (insn.type == PPCInsnType::BCCTR && insn.link) {
+                    // Indirect call via CTR (bctrl) — not a block terminator
+                    pc += 4;
+                    continue;
+                }
                 if (insn.is_return()) {
                     block.is_return = true;
                 } else if (insn.type == PPCInsnType::B && !insn.link) {
@@ -146,6 +244,9 @@ void CFG::build_blocks(Function& func, const DOLFile& dol) {
                 } else if (insn.type == PPCInsnType::BC) {
                     block.successors.push_back(insn.branch_target);
                     block.successors.push_back(pc + 4);
+                } else if (insn.type == PPCInsnType::BCLR && !insn.link) {
+                    // Conditional return — terminates block
+                    block.is_return = true;
                 }
                 pc += 4;
                 break;

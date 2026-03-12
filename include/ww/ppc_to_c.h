@@ -5,6 +5,7 @@
 
 #include "ww/ppc.h"
 #include <cstdio>
+#include <vector>
 
 namespace ww {
 
@@ -12,6 +13,7 @@ class PPCToCEmitter {
 public:
     FILE* out;
     int   indent_level;
+    std::vector<uint32_t> block_addrs; // All block start addresses in current function
 
     PPCToCEmitter(FILE* f) : out(f), indent_level(1) {}
 

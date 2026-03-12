@@ -348,9 +348,10 @@ namespace ww {
             break;
 
         // Store with update (used heavily for stack frames: stwu r1, -X(r1))
+        // PPC: EA = rA + d; MEM[EA] = rS; rA = EA (store BEFORE update)
         case PPCInsnType::STWU:
-            emit("ctx->r[%u] += %d; MEM_WRITE32(ctx->r[%u], ctx->r[%u]);",
-                 insn.ra, insn.simm, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + %d; MEM_WRITE32(ea, ctx->r[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.simm, insn.rs, insn.ra);
             break;
 
         // Store multiple
@@ -608,18 +609,18 @@ namespace ww {
                  insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb, insn.rs);
             break;
 
-        // Store with update (indexed)
+        // Store with update (indexed) — EA = rA + rB; MEM[EA] = rS; rA = EA
         case PPCInsnType::STBUX:
-            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITE8(ctx->r[%u], (uint8_t)ctx->r[%u]);",
-                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + ctx->r[%u]; MEM_WRITE8(ea, (uint8_t)ctx->r[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.rb, insn.rs, insn.ra);
             break;
         case PPCInsnType::STHUX:
-            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITE16(ctx->r[%u], (uint16_t)ctx->r[%u]);",
-                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + ctx->r[%u]; MEM_WRITE16(ea, (uint16_t)ctx->r[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.rb, insn.rs, insn.ra);
             break;
         case PPCInsnType::STWUX:
-            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITE32(ctx->r[%u], ctx->r[%u]);",
-                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + ctx->r[%u]; MEM_WRITE32(ea, ctx->r[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.rb, insn.rs, insn.ra);
             break;
 
         // Store byte-reversed
@@ -632,14 +633,14 @@ namespace ww {
                  insn.rs, insn.ra ? (std::string("ctx->r[") + std::to_string(insn.ra) + "]").c_str() : "0", insn.rb);
             break;
 
-        // Store with update (displacement)
+        // Store with update (displacement) — EA = rA + d; MEM[EA] = rS; rA = EA
         case PPCInsnType::STBU:
-            emit("ctx->r[%u] += %d; MEM_WRITE8(ctx->r[%u], (uint8_t)ctx->r[%u]);",
-                 insn.ra, insn.simm, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + %d; MEM_WRITE8(ea, (uint8_t)ctx->r[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.simm, insn.rs, insn.ra);
             break;
         case PPCInsnType::STHU:
-            emit("ctx->r[%u] += %d; MEM_WRITE16(ctx->r[%u], (uint16_t)ctx->r[%u]);",
-                 insn.ra, insn.simm, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + %d; MEM_WRITE16(ea, (uint16_t)ctx->r[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.simm, insn.rs, insn.ra);
             break;
 
         // ==== Load Indexed (missing) ====
@@ -711,12 +712,12 @@ namespace ww {
                  insn.ra, insn.simm, insn.rd, insn.ra);
             break;
         case PPCInsnType::STFSU:
-            emit("ctx->r[%u] += %d; MEM_WRITEF32(ctx->r[%u], (float)ctx->f[%u]);",
-                 insn.ra, insn.simm, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + %d; MEM_WRITEF32(ea, (float)ctx->f[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.simm, insn.rs, insn.ra);
             break;
         case PPCInsnType::STFDU:
-            emit("ctx->r[%u] += %d; MEM_WRITEF64(ctx->r[%u], ctx->f[%u]);",
-                 insn.ra, insn.simm, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + %d; MEM_WRITEF64(ea, ctx->f[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.simm, insn.rs, insn.ra);
             break;
 
         // Float indexed with update
@@ -729,12 +730,12 @@ namespace ww {
                  insn.ra, insn.ra, insn.rb, insn.rd, insn.ra);
             break;
         case PPCInsnType::STFSUX:
-            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITEF32(ctx->r[%u], (float)ctx->f[%u]);",
-                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + ctx->r[%u]; MEM_WRITEF32(ea, (float)ctx->f[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.rb, insn.rs, insn.ra);
             break;
         case PPCInsnType::STFDUX:
-            emit("ctx->r[%u] = ctx->r[%u] + ctx->r[%u]; MEM_WRITEF64(ctx->r[%u], ctx->f[%u]);",
-                 insn.ra, insn.ra, insn.rb, insn.ra, insn.rs);
+            emit("{ uint32_t ea = ctx->r[%u] + ctx->r[%u]; MEM_WRITEF64(ea, ctx->f[%u]); ctx->r[%u] = ea; }",
+                 insn.ra, insn.rb, insn.rs, insn.ra);
             break;
 
         // ==== Float (missing) ====
@@ -901,16 +902,19 @@ namespace ww {
             else if (insn.spr == 1)  emit("ctx->r[%u] = ctx->xer;", insn.rd);
             else if (insn.spr >= 912 && insn.spr <= 919)
                 emit("ctx->r[%u] = ctx->gqr[%u];", insn.rd, insn.spr - 912);
+            else if (insn.spr == 268) emit("ctx->r[%u] = PPC_MFTBL(); // mftb (TBL)", insn.rd);
+            else if (insn.spr == 269) emit("ctx->r[%u] = PPC_MFTBU(); // mftbu (TBU)", insn.rd);
             else emit("ctx->r[%u] = 0; // mfspr %u (unhandled)", insn.rd, insn.spr);
             break;
 
         case PPCInsnType::MTSPR:
-            if (insn.spr == 8)       emit("ctx->lr = ctx->r[%u];", insn.rs);
-            else if (insn.spr == 9)  emit("ctx->ctr = ctx->r[%u];", insn.rs);
-            else if (insn.spr == 1)  emit("ctx->xer = ctx->r[%u];", insn.rs);
+            // Note: for mtspr, the source register is in the rd field position (bits 21-25)
+            if (insn.spr == 8)       emit("ctx->lr = ctx->r[%u];", insn.rd);
+            else if (insn.spr == 9)  emit("ctx->ctr = ctx->r[%u];", insn.rd);
+            else if (insn.spr == 1)  emit("ctx->xer = ctx->r[%u];", insn.rd);
             else if (insn.spr >= 912 && insn.spr <= 919)
-                emit("ctx->gqr[%u] = ctx->r[%u];", insn.spr - 912, insn.rs);
-            else emit("// mtspr %u, r%u (unhandled)", insn.spr, insn.rs);
+                emit("ctx->gqr[%u] = ctx->r[%u];", insn.spr - 912, insn.rd);
+            else emit("// mtspr %u, r%u (unhandled)", insn.spr, insn.rd);
             break;
 
         case PPCInsnType::MFCR:
@@ -924,24 +928,93 @@ namespace ww {
 
         // ==== Branch (handled at block level, but emit for completeness) ====
         case PPCInsnType::B:
-            if (insn.link) emit("func_%08X(ctx, mem); // bl", insn.branch_target);
-            else           emit("goto label_%08X; // b", insn.branch_target);
+            if (insn.link) {
+                emit("ctx->lr = 0x%08Xu; func_%08X(ctx, mem); // bl", insn.address + 4, insn.branch_target);
+            } else {
+                emit("goto label_%08X; // b", insn.branch_target);
+            }
             break;
 
-        case PPCInsnType::BC:
-            // Conditional branch — handled by block structure
-            emit("// bc %u, %u -> 0x%08X", insn.bo, insn.bi, insn.branch_target);
-            break;
+        case PPCInsnType::BC: {
+            // Conditional branch: BO field encodes condition
+            // bit 4 (0x10): 1=don't test CR  bit 3 (0x08): CR sense (1=true)
+            // bit 2 (0x04): 1=don't decrement CTR  bit 1 (0x02): CTR sense (1=branch if CTR==0)
+            uint32_t bo = insn.bo;
+            uint32_t bi = insn.bi;
+            bool skip_ctr = (bo & 0x04) != 0;
+            bool skip_cr  = (bo & 0x10) != 0;
 
-        case PPCInsnType::BCLR:
-            if (insn.is_return()) emit("return; // blr");
-            else if (insn.link)   emit("CALL_INDIRECT(ctx->lr, ctx, mem); // blrl");
-            else                  emit("// bclr (conditional return)");
+            if (skip_ctr && skip_cr) {
+                // BO=20: unconditional (shouldn't normally appear as bc, but handle it)
+                emit("goto label_%08X; // bc (always)", insn.branch_target);
+            } else if (skip_ctr && !skip_cr) {
+                // Pure CR test (most common: BO=4 bf, BO=12 bt)
+                bool cr_sense = (bo & 0x08) != 0;
+                if (cr_sense)
+                    emit("if (ctx->get_cr_bit(%u)) goto label_%08X; // bt cr%u", bi, insn.branch_target, bi);
+                else
+                    emit("if (!ctx->get_cr_bit(%u)) goto label_%08X; // bf cr%u", bi, insn.branch_target, bi);
+            } else if (!skip_ctr && skip_cr) {
+                // CTR decrement only (BO=16 bdnz, BO=18 bdz)
+                bool ctr_zero = (bo & 0x02) != 0;
+                if (ctr_zero)
+                    emit("if (--ctx->ctr == 0) goto label_%08X; // bdz", insn.branch_target);
+                else
+                    emit("if (--ctx->ctr != 0) goto label_%08X; // bdnz", insn.branch_target);
+            } else {
+                // Both CTR and CR test (rare)
+                bool cr_sense = (bo & 0x08) != 0;
+                bool ctr_zero = (bo & 0x02) != 0;
+                emit("{ ctx->ctr--; if (ctx->ctr %s 0 && %sctx->get_cr_bit(%u)) goto label_%08X; } // bc %u, %u",
+                     ctr_zero ? "==" : "!=", cr_sense ? "" : "!", bi, insn.branch_target, bo, bi);
+            }
             break;
+        }
+
+        case PPCInsnType::BCLR: {
+            if (insn.is_return()) {
+                emit("return; // blr");
+            } else if (insn.link) {
+                emit("{ uint32_t target = ctx->lr; ctx->lr = 0x%08Xu; CALL_INDIRECT(target, ctx, mem); } // blrl", insn.address + 4);
+            } else {
+                // Conditional return via LR
+                uint32_t bo = insn.bo;
+                uint32_t bi = insn.bi;
+                bool skip_ctr = (bo & 0x04) != 0;
+                bool skip_cr  = (bo & 0x10) != 0;
+
+                if (skip_ctr && !skip_cr) {
+                    bool cr_sense = (bo & 0x08) != 0;
+                    if (cr_sense)
+                        emit("if (ctx->get_cr_bit(%u)) return; // bclr bt cr%u", bi, bi);
+                    else
+                        emit("if (!ctx->get_cr_bit(%u)) return; // bclr bf cr%u", bi, bi);
+                } else if (!skip_ctr && skip_cr) {
+                    bool ctr_zero = (bo & 0x02) != 0;
+                    if (ctr_zero)
+                        emit("if (--ctx->ctr == 0) return; // bdzlr");
+                    else
+                        emit("if (--ctx->ctr != 0) return; // bdnzlr");
+                } else {
+                    emit("return; // bclr (unconditional fallback)");
+                }
+            }
+            break;
+        }
 
         case PPCInsnType::BCCTR:
-            if (insn.link) emit("CALL_INDIRECT(ctx->ctr, ctx, mem); // bctrl");
-            else           emit("JUMP_INDIRECT(ctx->ctr); // bctr");
+            if (insn.link) {
+                emit("ctx->lr = 0x%08Xu; CALL_INDIRECT(ctx->ctr, ctx, mem); // bctrl", insn.address + 4);
+            } else {
+                // Switch table: dispatch to a label within this function based on CTR value
+                emit("// bctr — switch table dispatch");
+                emit("switch (ctx->ctr) {");
+                for (uint32_t addr : block_addrs) {
+                    emit("    case 0x%08Xu: goto label_%08X;", addr, addr);
+                }
+                emit("    default: CALL_INDIRECT(ctx->ctr, ctx, mem); break; // fallback: tail call");
+                emit("}");
+            }
             break;
 
         // ==== No-ops and cache ops (safe to ignore) ====
