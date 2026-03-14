@@ -395,33 +395,20 @@ int main(int argc, char** argv) {
 
         int frame = 0;
         while (g_game_running) {
-            // Per-frame work from main01's loop:
-            // 1. func_800078C0 — mDoRst_Execute (reset/restart check)
-            // 2. func_80007224 — mDoAud_Execute (audio processing)
-            // 3. func_800231E4 — fapGm_Execute (game framework: actors, scenes!)
-            // 4. func_80006264 — main loop cleanup
             func_800078C0(&g_ctx, &g_mem);  // mDoRst_Execute
             func_80007224(&g_ctx, &g_mem);  // mDoAud_Execute
-
-            // Call fapGm_Execute directly. VRetrace gate (func_8003EBD4) returns 0
-            // naturally (no interrupts), which causes the dispatch to run.
-            // func_800404CC, func_802C7788, func_80006C4C patched as no-ops in
-            // recompiled source. func_802B0634 patched to skip NULL objects
-            // (graphics double-buffer not initialized since mDoGph_Create skipped).
             func_800231E4(&g_ctx, &g_mem);  // fapGm_Execute
-
             func_80006264(&g_ctx, &g_mem);  // main loop cleanup
 
             frame++;
             if (frame <= 10 || frame % 60 == 0) {
                 fprintf(stderr, "[*] Frame %d\n", frame);
-                fflush(stderr);
             }
 
             Sleep(16);  // ~60 FPS
         }
 
-        fprintf(stderr, "[*] Game thread exiting after %d frames.\n", frame);
+        fprintf(stderr, "\n[*] Game thread exiting after %d frames.\n", frame);
     });
     game_thread.detach();
 
