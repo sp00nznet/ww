@@ -53,21 +53,13 @@ extern void func_80007A70(PPCContext* ctx, Memory* mem);  // mDoRst_Create (rese
 extern void func_80023218(PPCContext* ctx, Memory* mem);  // fapGm_Create (framework create)
 extern void func_80022DF8(PPCContext* ctx, Memory* mem);  // framework post-create init
 
+
 // Per-frame functions from main01's loop:
 extern void func_800078C0(PPCContext* ctx, Memory* mem);  // mDoRst_Execute (reset check)
 extern void func_80007224(PPCContext* ctx, Memory* mem);  // mDoAud_Execute (audio)
 extern void func_800231E4(PPCContext* ctx, Memory* mem);  // fapGm_Execute (framework execute!)
 extern void func_80006264(PPCContext* ctx, Memory* mem);  // main loop cleanup
-extern void func_8003EC84(PPCContext* ctx, Memory* mem);  // fapGm layer dispatch
-extern void func_802539A4(PPCContext* ctx, Memory* mem);  // fapGm sub-call 1
-extern void func_8003EBD4(PPCContext* ctx, Memory* mem);  // fapGm sub-call 2
-extern void func_8024135C(PPCContext* ctx, Memory* mem);
-extern void func_8003D314(PPCContext* ctx, Memory* mem);
-extern void func_8003FF00(PPCContext* ctx, Memory* mem);
-extern void func_8003D150(PPCContext* ctx, Memory* mem);
-extern void func_8003D7E0(PPCContext* ctx, Memory* mem);
-extern void func_800404CC(PPCContext* ctx, Memory* mem);
-extern void func_802449AC(PPCContext* ctx, Memory* mem);  // fapGm counter update
+
 
 // Addresses of constructors known to hang (infinite loops or HW dependencies)
 static const uint32_t SKIP_CTORS[] = {
@@ -118,6 +110,47 @@ static void idle_loop_replacement(PPCContext* ctx, Memory* mem) {
     // via func_80309ADC. This simulates one "frame" of work.
     ctx->r[3] = 0;
 }
+
+// ---- Simple bump allocator for JKR heap replacement ----
+// The game's JKRExpHeap system requires complex initialization that depends on
+// mDoGph_Create running (which we skip). Instead, we replace the low-level
+// allocator func_802B0434 with a simple bump allocator from the arena.
+static uint32_t g_bump_alloc_ptr = 0x80400000;  // Start of arena
+static const uint32_t BUMP_ALLOC_END = 0x81700000;  // End of arena
+
+static void bump_alloc_replacement(PPCContext* ctx, Memory* mem) {
+    // func_802B0434(r3=size, r4=align, r5=heap)
+    // Ignores heap parameter, allocates from our bump arena.
+    uint32_t size = ctx->r[3];
+    int32_t align = (int32_t)ctx->r[4];
+    if (align < 0) align = -align;  // Negative alignment = allocate from top
+    if (align < 4) align = 4;
+
+    // Align the allocation pointer
+    uint32_t aligned = (g_bump_alloc_ptr + align - 1) & ~(align - 1);
+    uint32_t end = aligned + size;
+
+    if (end > BUMP_ALLOC_END || size == 0) {
+        ctx->r[3] = 0;  // Allocation failed
+        return;
+    }
+
+    g_bump_alloc_ptr = end;
+    ctx->r[3] = aligned;
+}
+
+static void bump_free_replacement(PPCContext* ctx, Memory* mem) {
+    // func_802B04FC(r3=ptr, r4=heap): free — no-op for bump allocator
+    ctx->r[3] = 0;
+}
+
+// JKRHeap::getCurrentHeap — return a fake non-null heap pointer
+static void get_current_heap_replacement(PPCContext* ctx, Memory* mem) {
+    // Return a non-null value so callers don't think heap is uninitialized.
+    // The actual heap object isn't used since we replace alloc/free.
+    ctx->r[3] = 0x80400010;  // Fake heap object in arena
+}
+
 
 // Load DOL sections into emulated memory
 static bool load_dol_into_memory(const char* path, Memory& mem) {
@@ -256,6 +289,36 @@ int main(int argc, char** argv) {
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
     // Frame timing gate: always return "process frame"
     g_func_table.register_func(0x8003EBD4, frame_gate_replacement);
+    // Note: Hardware-dependent functions are patched directly in recompiled source
+    // as no-op returns (direct bl calls bypass func_table overrides):
+    //   func_800404CC — GX draw-done sync (recomp_0006.cpp)
+    //   func_802C7788 — Display busy-wait / VIWaitForRetrace (recomp_0066.cpp)
+    //   func_80006C4C — Exception handler setup (recomp_0000.cpp)
+    //   func_802C79FC — Assert/panic handler (recomp_0066.cpp)
+    //   func_802B0634 — Graphics buffer execute, NULL-safe (recomp_0063.cpp)
+
+    // ---- Initialize Heap System (bump allocator replacement) ----
+    // The game's JKRExpHeap requires mDoGph_Create which we skip (GX hardware).
+    // We replace the low-level JKR allocator with a simple bump allocator and
+    // set global heap pointers so the framework can allocate objects.
+    printf("[*] Initializing heap (bump allocator)...\n");
+    {
+        // Replace JKR alloc/free with bump allocator
+        g_func_table.register_func(0x802B0434, bump_alloc_replacement);
+        g_func_table.register_func(0x802B04FC, bump_free_replacement);
+        g_func_table.register_func(0x8001199C, get_current_heap_replacement);
+
+        // Set root heap globals so JKR code paths don't hit NULL checks
+        // r13(-27060) = root heap ptr, r13(-27056) = current heap ptr
+        uint32_t fake_heap = 0x80400010;
+        g_mem.write32(g_ctx.r[13] - 27060, fake_heap);  // sRootHeap
+        g_mem.write32(g_ctx.r[13] - 27056, fake_heap);  // sCurrentHeap
+        g_mem.write32(g_ctx.r[13] - 30640, fake_heap);  // getCurrentHeap result
+
+        printf("[*] Bump allocator: 0x%08X - 0x%08X\n",
+               g_bump_alloc_ptr, BUMP_ALLOC_END);
+    }
+    fflush(stdout);
 
     // ---- Initialize game framework (from main01__Fv = func_80006338) ----
     // main01 does: mDoCPd_Create, mDoGph_Create, mDoRst_Create, fapGm_Create,
@@ -266,7 +329,7 @@ int main(int argc, char** argv) {
     fflush(stdout);
 
     // Skip mDoCPd_Create (0x8000C70C) — hangs on PAD/SI hardware init
-    // Skip mDoGph_Create (0x8000BC94) — tries to init GX via hardware
+    // Skip mDoGph_Create (0x8000BC94) — graphics handled by D3D11, heap done above
     // Skip mDoRst_Create (0x80007A70) — reset controller, might need HW
 
     printf("[*]   fapGm_Create (game framework)...\n"); fflush(stdout);
@@ -277,6 +340,50 @@ int main(int argc, char** argv) {
     func_80022DF8(&g_ctx, &g_mem);
     printf("[*] Game framework initialized.\n");
     fflush(stdout);
+
+    // ---- Diagnostics: check framework state ----
+    {
+        uint32_t r13_val = g_ctx.r[13];  // 0x803FE0E0
+        printf("[*] Diagnostics:\n");
+        printf("[*]   r13 = 0x%08X\n", r13_val);
+
+        // SDA-relative offsets are signed 16-bit: r13 + (int16_t)offset
+        // r13(-30488) = 0x803FE0E0 - 30488 = 0x803F69C8
+        uint32_t scene_addr = r13_val - 30488;
+        uint32_t scene_ptr = g_mem.read32(scene_addr);
+        printf("[*]   Root scene ptr @0x%08X (r13-30488) = 0x%08X\n", scene_addr, scene_ptr);
+
+        // r13(-30372) = 0x803FE0E0 - 30372 = 0x803F6A3C
+        uint32_t lc_addr = r13_val - 30372;
+        uint32_t layer_count = g_mem.read32(lc_addr);
+        printf("[*]   Layer count @0x%08X (r13-30372) = %u\n", lc_addr, layer_count);
+
+        // r13(-30376)
+        uint32_t val30376 = g_mem.read32(r13_val - 30376);
+        printf("[*]   r13-30376 @0x%08X = 0x%08X\n", r13_val - 30376, val30376);
+
+        // r13(-30368)
+        uint32_t val30368 = g_mem.read32(r13_val - 30368);
+        printf("[*]   r13-30368 @0x%08X = 0x%08X\n", r13_val - 30368, val30368);
+
+        // r13(-30348) — VRetrace state (frame gate reads this)
+        uint32_t vretrace = g_mem.read32(r13_val - 30348);
+        printf("[*]   VRetrace state @0x%08X (r13-30348) = 0x%08X\n", r13_val - 30348, vretrace);
+
+        // Framework state at 0x803B9A00
+        uint8_t fw_state = g_mem.read8(0x803B9A00);
+        printf("[*]   Framework state (0x803B9A00) = 0x%02X\n", fw_state);
+
+        // fapGm global at 0x803A5778
+        uint32_t fapgm_global = g_mem.read32(0x803A5778);
+        printf("[*]   fapGm global (0x803A5778) = 0x%08X\n", fapgm_global);
+
+        // Check the scene/layer table at 0x803A22F8 (fapGm_Create passes this)
+        uint32_t table_ptr = g_mem.read32(0x803A22F8);
+        printf("[*]   fapGm table @0x803A22F8 = 0x%08X\n", table_ptr);
+
+        fflush(stdout);
+    }
 
     // ---- Launch Game Thread ----
     printf("[*] Launching game thread (main01 loop)...\n");
@@ -296,27 +403,19 @@ int main(int argc, char** argv) {
             func_800078C0(&g_ctx, &g_mem);  // mDoRst_Execute
             func_80007224(&g_ctx, &g_mem);  // mDoAud_Execute
 
-            // Native fapGm_Execute — bypass VRetrace gate
-            // func_8003EBD4 checks VRetrace interrupt state which is never set
-            // without hardware interrupt emulation. We call the layer dispatch
-            // sub-functions directly, forcing frame processing every iteration.
-            {
-                func_802539A4(&g_ctx, &g_mem);
-                func_8024135C(&g_ctx, &g_mem);
-                func_8003D314(&g_ctx, &g_mem);
-                func_8003FF00(&g_ctx, &g_mem);
-                func_8003D150(&g_ctx, &g_mem);
-                g_ctx.r[3] = 0x8003E370;
-                func_8003D7E0(&g_ctx, &g_mem);
-                // Skip func_800404CC (GX sync callback) — hangs without HW
-            }
-            func_802449AC(&g_ctx, &g_mem);  // fapGm counter update
+            // Call fapGm_Execute directly. VRetrace gate (func_8003EBD4) returns 0
+            // naturally (no interrupts), which causes the dispatch to run.
+            // func_800404CC, func_802C7788, func_80006C4C patched as no-ops in
+            // recompiled source. func_802B0634 patched to skip NULL objects
+            // (graphics double-buffer not initialized since mDoGph_Create skipped).
+            func_800231E4(&g_ctx, &g_mem);  // fapGm_Execute
 
             func_80006264(&g_ctx, &g_mem);  // main loop cleanup
 
             frame++;
-            if (frame <= 5 || frame % 60 == 0) {
-                fprintf(stderr, "[*] Frame %d complete\n", frame);
+            if (frame <= 10 || frame % 60 == 0) {
+                fprintf(stderr, "[*] Frame %d\n", frame);
+                fflush(stderr);
             }
 
             Sleep(16);  // ~60 FPS
