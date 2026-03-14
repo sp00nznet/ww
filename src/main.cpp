@@ -45,6 +45,9 @@ extern void func_8030CFB0(PPCContext* ctx, Memory* mem);  // Small init helper
 extern void func_80309A68(PPCContext* ctx, Memory* mem);  // __init_user (static ctors)
 extern void func_80006464(PPCContext* ctx, Memory* mem);  // main()
 
+// Scene change request
+extern void func_8000AC3C(PPCContext* ctx, Memory* mem);  // mDoGph_gInf_c::changeScene
+
 // From main01__Fv (0x80006338) — the REAL game loop:
 extern void func_80006338(PPCContext* ctx, Memory* mem);  // main01 (init + game loop)
 extern void func_8000C70C(PPCContext* ctx, Memory* mem);  // mDoCPd_Create (controller init)
@@ -339,6 +342,54 @@ int main(int argc, char** argv) {
     printf("[*]   Framework post-init (func_80022DF8)...\n"); fflush(stdout);
     func_80022DF8(&g_ctx, &g_mem);
     printf("[*] Game framework initialized.\n");
+    fflush(stdout);
+
+    // ---- Trigger initial scene load ----
+    // The scene loading state machine (in func_8000AF2C) starts at state 0 and
+    // never progresses because func_8000AC3C (scene change request) is never called.
+    // In the original game, the boot sequence sets scene globals and triggers loading.
+    // We manually set the starting scene to "sea_T" (title screen).
+    printf("[*] Setting initial scene (sea_T)...\n");
+    {
+        uint32_t r13_val = g_ctx.r[13];
+        // Stage name string — write "sea_T" to the stage name global
+        // dComIfG_gameInfo.play.mStartStage stores the stage name
+        // at r13(-32720) area (0x803F80B0)
+        uint32_t stage_area = r13_val - 32720;  // 0x803F80B0
+        // Write stage name "sea_T\0" (8 bytes)
+        g_mem.write8(stage_area + 0, 's');
+        g_mem.write8(stage_area + 1, 'e');
+        g_mem.write8(stage_area + 2, 'a');
+        g_mem.write8(stage_area + 3, '_');
+        g_mem.write8(stage_area + 4, 'T');
+        g_mem.write8(stage_area + 5, 0);
+
+        // Scene type flag — set to 14 (0x0E) to trigger loading path
+        g_mem.write8(r13_val - 32719, 14);   // scene type = 14
+
+        // Room/layer/spawn defaults
+        g_mem.write8(r13_val - 32717, 0);     // room index = 0
+        g_mem.write8(r13_val - 32716, 0);     // layer = 0
+        g_mem.write16(r13_val - 32714, 0);    // spawn point = 0
+        g_mem.write16(r13_val - 32712, 0);    // parameter = 0
+
+        printf("[*] Scene globals set: type=%d room=%d layer=%d spawn=%d\n",
+               g_mem.read8(r13_val - 32719),
+               g_mem.read8(r13_val - 32717),
+               g_mem.read8(r13_val - 32716),
+               (int16_t)g_mem.read16(r13_val - 32714));
+
+        // Trigger the scene change request
+        // Note: This currently fails because func_80324688 (stage lookup) returns 0
+        // — the game's FST (File System Table) is not loaded from disc. Scene loading
+        // requires loading the FST from the game disc image first.
+        printf("[*] Requesting scene change...\n");
+        fflush(stdout);
+        func_8000AC3C(&g_ctx, &g_mem);
+        int16_t scene_state = (int16_t)g_mem.read16(r13_val - 30754);
+        printf("[*] Scene change result: state=%d %s\n", scene_state,
+               scene_state == -1 ? "(failed — no disc data)" : "(ok)");
+    }
     fflush(stdout);
 
     // ---- Diagnostics: check framework state ----
