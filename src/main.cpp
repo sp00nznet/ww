@@ -492,6 +492,7 @@ int main(int argc, char** argv) {
         g_mem.write32(g_ctx.r[13] - 27060, fake_heap);  // sRootHeap
         g_mem.write32(g_ctx.r[13] - 27056, fake_heap);  // sCurrentHeap
         g_mem.write32(g_ctx.r[13] - 30640, fake_heap);  // getCurrentHeap result
+        g_mem.write32(g_ctx.r[13] - 30648, fake_heap);  // func_800118C0 heap ptr
 
         printf("[*] Bump allocator: 0x%08X - 0x%08X\n",
                g_bump_alloc_ptr, BUMP_ALLOC_END);
@@ -542,9 +543,9 @@ int main(int argc, char** argv) {
         // Scene type flag — set to 14 (0x0E) to trigger loading path
         g_mem.write8(r13_val - 32719, 14);   // scene type = 14
 
-        // Room/layer/spawn defaults
-        g_mem.write8(r13_val - 32717, 0);     // room index = 0
-        g_mem.write8(r13_val - 32716, 0);     // layer = 0
+        // Room 44 = sea stage first room, Layer 0xFF = all layers
+        g_mem.write8(r13_val - 32717, 44);    // room index
+        g_mem.write8(r13_val - 32716, 0xFF);  // layer = all
         g_mem.write16(r13_val - 32714, 0);    // spawn point = 0
         g_mem.write16(r13_val - 32712, 0);    // parameter = 0
 
@@ -554,10 +555,16 @@ int main(int argc, char** argv) {
                g_mem.read8(r13_val - 32716),
                (int16_t)g_mem.read16(r13_val - 32714));
 
+        // Debug: check the scene type dispatch table
+        uint32_t jtable = 0x803A1C08;
+        printf("[*] Scene type 14 dispatch: jump_table[14] = 0x%08X\n",
+               g_mem.read32(jtable + 14 * 4));
+        printf("[*] Scene type  6 dispatch: jump_table[6] = 0x%08X\n",
+               g_mem.read32(jtable + 6 * 4));
+        printf("[*] Scene type  0 dispatch: jump_table[0] = 0x%08X\n",
+               g_mem.read32(jtable + 0 * 4));
+
         // Trigger the scene change request
-        // Note: This currently fails because func_80324688 (stage lookup) returns 0
-        // — the game's FST (File System Table) is not loaded from disc. Scene loading
-        // requires loading the FST from the game disc image first.
         printf("[*] Requesting scene change...\n");
         fflush(stdout);
         func_8000AC3C(&g_ctx, &g_mem);
