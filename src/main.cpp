@@ -496,26 +496,44 @@ int main(int argc, char** argv) {
         printf("[*]   r13(-30712) = 0x%08X, r13(-30708) = 0x%08X (disc offsets)\n",
                g_mem.read32(r13_val - 30712), g_mem.read32(r13_val - 30708));
 
-        // Simulate DVD completion: set state to 2 and invoke the callback.
-        // On real hardware, the DI interrupt handler sets state to 2 after
-        // disc read completes, then the callback (func_8000ABC4) runs
-        // func_8000AB1C which processes the loaded data at state==2.
-        if (scene_state == 1) {
-            printf("[*] Simulating DVD completion (state 1→2, invoking callback)...\n");
+        // Complete the DVD request: read data from ISO, then invoke callback.
+        if (scene_state == 1 && is_disc_mounted()) {
+            // Read the disc offset from the request and the allocated buffers
+            uint32_t disc_off_lo = g_mem.read32(r13_val - 30708);
+            uint32_t buf1_addr = g_mem.read32(r13_val - 30740);  // first buffer
+            uint32_t buf1_size = g_mem.read32(r13_val - 30736);  // first alloc result
+            uint32_t buf2_addr = g_mem.read32(r13_val - 30744);  // second buffer
+            uint32_t buf2_size = g_mem.read32(r13_val - 30732);  // second alloc result
+
+            printf("[*] DVD completion: reading from disc offset 0x%08X\n", disc_off_lo);
+            printf("[*]   Buffer 1: 0x%08X (desc=0x%08X)\n", buf1_addr, buf1_size);
+            printf("[*]   Buffer 2: 0x%08X (desc=0x%08X)\n", buf2_addr, buf2_size);
+
+            // Read stage data from ISO into the allocated buffers
+            if (buf1_addr >= 0x80000000 && buf1_size > 0 && buf1_size < 0x01000000) {
+                uint8_t* dst = g_mem.translate(buf1_addr);
+                if (dst) {
+                    size_t read = disc_read(disc_off_lo, dst, buf1_size);
+                    printf("[*]   Read %zu bytes into buffer 1\n", read);
+                }
+            }
+
+            // Set state to 2 and invoke completion callback
+            printf("[*] Invoking DVD completion callback...\n");
             g_mem.write16(r13_val - 30754, 2);  // state = 2
-            // Invoke the completion callback directly
             uint32_t dvd_q = g_mem.read32(r13_val - 26400);
             if (dvd_q != 0) {
                 uint32_t cb = g_mem.read32(dvd_q + 0);
                 if (cb != 0) {
-                    printf("[*]   Calling callback 0x%08X...\n", cb);
                     g_ctx.r[3] = dvd_q;
-                    g_ctx.r[4] = 0;  // success
+                    g_ctx.r[4] = 0;
                     g_func_table.call(cb, &g_ctx, &g_mem);
                     int16_t new_state = (int16_t)g_mem.read16(r13_val - 30754);
                     printf("[*]   After callback: state=%d\n", new_state);
                 }
             }
+        } else if (scene_state == 1) {
+            printf("[*] Scene change pending but no disc mounted.\n");
         }
     }
     fflush(stdout);
