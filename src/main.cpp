@@ -496,10 +496,26 @@ int main(int argc, char** argv) {
         printf("[*]   r13(-30712) = 0x%08X, r13(-30708) = 0x%08X (disc offsets)\n",
                g_mem.read32(r13_val - 30712), g_mem.read32(r13_val - 30708));
 
-        // TEST: Manually advance scene state to 2 to test loading flow
+        // Simulate DVD completion: set state to 2 and invoke the callback.
+        // On real hardware, the DI interrupt handler sets state to 2 after
+        // disc read completes, then the callback (func_8000ABC4) runs
+        // func_8000AB1C which processes the loaded data at state==2.
         if (scene_state == 1) {
-            printf("[*] Manually advancing scene state 1→2 (bypassing DVD queue)...\n");
-            g_mem.write16(r13_val - 30754, 2);
+            printf("[*] Simulating DVD completion (state 1→2, invoking callback)...\n");
+            g_mem.write16(r13_val - 30754, 2);  // state = 2
+            // Invoke the completion callback directly
+            uint32_t dvd_q = g_mem.read32(r13_val - 26400);
+            if (dvd_q != 0) {
+                uint32_t cb = g_mem.read32(dvd_q + 0);
+                if (cb != 0) {
+                    printf("[*]   Calling callback 0x%08X...\n", cb);
+                    g_ctx.r[3] = dvd_q;
+                    g_ctx.r[4] = 0;  // success
+                    g_func_table.call(cb, &g_ctx, &g_mem);
+                    int16_t new_state = (int16_t)g_mem.read16(r13_val - 30754);
+                    printf("[*]   After callback: state=%d\n", new_state);
+                }
+            }
         }
     }
     fflush(stdout);
