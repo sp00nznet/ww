@@ -600,54 +600,26 @@ int main(int argc, char** argv) {
             func_800078C0(&g_ctx, &g_mem);  // mDoRst_Execute
             func_80007224(&g_ctx, &g_mem);  // mDoAud_Execute
 
-            // Pump DVD request queue — process pending async disc reads.
-            // On real hardware, the DI controller + DMA does this via interrupts.
-            // We check the queue, perform the actual read from ISO, and mark complete.
+            // Pump DVD request queue — process pending async requests.
+            // On real hardware, the DVD thread + DI interrupts handle this.
+            // We check the queue, set state to 2 (data ready), and invoke the
+            // completion callback to process the loaded data.
             {
-                uint32_t dvd_queue = g_mem.read32(g_ctx.r[13] - 26400);
-                if (dvd_queue != 0 && is_disc_mounted()) {
-                    // Read request fields from the struct
-                    // The request struct layout (from func_80301F54 analysis):
-                    //   +0: callback function address
-                    //   +4: buffer address (destination in emulated RAM)
-                    //   +8: read length
-                    //   +12: disc offset (low 32 bits)
-                    //   +16: disc offset (high 32 bits, usually 0)
-                    //   +20: status (0=pending, non-zero=done)
-                    //   +24: next pointer in queue
-                    uint32_t req_buf    = g_mem.read32(dvd_queue + 4);
-                    uint32_t req_len    = g_mem.read32(dvd_queue + 8);
-                    uint32_t req_offset = g_mem.read32(dvd_queue + 12);
-                    uint32_t req_status = g_mem.read32(dvd_queue + 20);
-
-                    if (frame <= 2) {
-                    fprintf(stderr, "[DVD] Request struct dump @0x%08X (80 bytes):\n", dvd_queue);
-                    for (int i = 0; i < 80; i += 4) {
-                        uint32_t val = g_mem.read32(dvd_queue + i);
-                        if (val != 0)
-                            fprintf(stderr, "  +%3d: 0x%08X\n", i, val);
-                    }
-                    // Also dump from -32 to 0 (the struct may start before the pointer)
-                    fprintf(stderr, "[DVD] Pre-header (before 0x%08X):\n", dvd_queue);
-                    for (int i = -40; i < 0; i += 4) {
-                        uint32_t val = g_mem.read32(dvd_queue + i);
-                        if (val != 0)
-                            fprintf(stderr, "  %3d: 0x%08X\n", i, val);
-                    }
-                }
-                if (req_status == 0 && req_buf >= 0x80000000 && req_len > 0) {
-                        // Perform the actual disc read
-                        uint8_t* dst = g_mem.translate(req_buf);
-                        if (dst && req_len < 0x01000000) {
-                            size_t read = disc_read(req_offset, dst, req_len);
-                            if (read > 0) {
-                                // Mark request as complete
-                                g_mem.write32(dvd_queue + 20, 1);  // status = done
-                                if (frame <= 5) {
-                                    fprintf(stderr, "[DVD] Read %zu bytes from 0x%08X → 0x%08X\n",
-                                            read, req_offset, req_buf);
-                                }
-                            }
+                uint32_t dvd_q = g_mem.read32(g_ctx.r[13] - 26400);
+                int16_t cur_state = (int16_t)g_mem.read16(g_ctx.r[13] - 30754);
+                if (dvd_q != 0 && cur_state == 1 && is_disc_mounted()) {
+                    uint32_t cb = g_mem.read32(dvd_q + 0);
+                    if (cb != 0) {
+                        // Advance state and invoke callback
+                        g_mem.write16(g_ctx.r[13] - 30754, 2);
+                        // Clear queue head
+                        g_mem.write32(g_ctx.r[13] - 26400, 0);
+                        // Call callback
+                        g_ctx.r[3] = dvd_q;
+                        g_ctx.r[4] = 0;
+                        g_func_table.call(cb, &g_ctx, &g_mem);
+                        if (frame <= 5) {
+                            fprintf(stderr, "[DVD] Processed queue entry (cb=0x%08X)\n", cb);
                         }
                     }
                 }
