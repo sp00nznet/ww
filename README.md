@@ -121,15 +121,21 @@ cmake --build build --target ww_recompiler --config Release
 # Recompile the game (you need the DOL extracted from your ISO)
 ./build/Release/ww_recompiler.exe main.dol --extra-funcs extra_funcs.txt --output recompiled/
 
-# IMPORTANT: After recompiling, patch recomp_0018.cpp:
-#   In func_800AD17C, comment out the calls to func_8025214C and func_80252020
-#   (these contain VI register busy-waits that hang without HW emulation)
+# IMPORTANT: After recompiling, apply patches to recompiled source:
+#   See "Recompiled Source Patches" section below for the full list.
+#   At minimum: recomp_0018.cpp (display init), recomp_0063.cpp (bump alloc),
+#   recomp_0066.cpp (VI wait, assert), recomp_0006.cpp (GX sync),
+#   recomp_0000.cpp (exception handler), recomp_0067.cpp (camera GX),
+#   recomp_0075.cpp (DVD read), recomp_0074.cpp (async DVD),
+#   recomp_0080.cpp (bctr tail call), recomp_0001.cpp (heap)
 
 # Build the game runtime + recompiled code
 cmake --build build --target ww_launcher --config Release
 
-# Run
+# Run (place your GZLE01 ISO as ww.iso in the project directory)
 ./build/Release/ww_launcher.exe
+# Or specify paths explicitly:
+./build/Release/ww_launcher.exe main.dol --iso /path/to/game.iso
 ```
 
 ## Controls
@@ -206,24 +212,43 @@ load/store operations with GQR-based dequantization.
 
 ### Runtime Status
 
-The game is **running**:
+The game is **running with scene data loading from disc**:
 
 - All 41 translation units compile with MSVC (C++20)
 - DOL loaded, all 100 static constructors complete
 - Game framework (`fapGm_Create`) initialized successfully
-- Main game loop running at ~60 FPS with native fapGm layer dispatch
-- VRetrace timing gate bypassed (no HW interrupt emulation needed)
-- Display init busy-waits (VI register polling) stubbed out
-- PPCHalt infinite spin replaced with cooperative yield
-- Only 3 unresolved indirect calls remain (data/BSS section addresses — not recompilable)
+- Main game loop running at ~60 FPS with full `fapGm_Execute` dispatch
+- **Root scene created and scene loading state machine complete** (0→1→2→3→-1)
+- **FST loaded from game ISO** (2391 files parsed)
+- **Stage.arc (Yaz0/RARC archive) loaded from disc** into emulated RAM
+- **DVD request queue processed per-frame** with completion callbacks
+- Bump allocator replaces JKR heap system (mDoGph_Create skipped)
+- 12 hardware-dependent functions patched in recompiled source as no-ops
+- VRetrace timing gate returns 0 naturally (no bypass needed)
+- GX camera matrix, draw-done sync, VI busy-waits all stubbed
 
-### Current Focus
+### What Works
 
-- GX TEV stage -> HLSL shader pipeline (getting pixels on screen)
-- Display list processing
-- REL (actor/scene module) loading and relocation
-- Expanding OS HLE coverage (thread scheduling, DVD file access)
-- Resolving remaining indirect call targets
+| System | Status |
+|--------|--------|
+| Static constructors (100/100) | Working |
+| Game framework (fapGm) | Working — full layer dispatch every frame |
+| Scene change requests | Working — state machine cycles correctly |
+| DVD/ISO file access | Working — FST parsed, Stage.arc loaded from disc |
+| Per-frame DVD queue | Working — processes async requests synchronously |
+| Memory allocation | Working — bump allocator replaces JKR heap |
+| Time Base (TB) register | Working — host QueryPerformanceCounter scaled to 40.5MHz |
+
+### Current Blocker
+
+The scene **loads** but doesn't **initialize** — the scene flag (`0x803CA701`) stays 0. This is because the game's **DVD loading thread** (which decompresses Yaz0 archives, parses RARC data, and creates scene actors) runs as a separate GameCube thread that our single-threaded model doesn't execute. The raw Yaz0 data is in RAM but never decompressed/parsed.
+
+### Next Steps
+
+- **DVD thread emulation**: Run the DVD thread's work loop (Yaz0 decompress → RARC parse → actor creation) in the per-frame processing
+- **Yaz0 decompression**: Verify recompiled decompressor works, or add native implementation
+- **GX rendering**: TEV stage → HLSL shader pipeline for actual pixel output
+- **REL module loading**: Scene data includes relocatable code modules
 
 ## Standing on the Shoulders of Giants
 
