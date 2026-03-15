@@ -155,45 +155,31 @@ static void get_current_heap_replacement(PPCContext* ctx, Memory* mem) {
 }
 
 
-static FILE* g_iso_file = nullptr;  // Keep ISO open for file reads
-
-// DVD read from ISO — replacement for func_8030803C (DVDReadPrio)
-// The original tries to access DI hardware registers at 0xCC006000+.
-// We intercept it and read directly from the ISO file.
-static void dvd_read_from_iso(PPCContext* ctx, Memory* mem) {
-    // func_8030803C signature (from recompiled code analysis):
-    // r3 = DVDCommandBlock/FileInfo pointer
-    // r4 = callback function address
-    // r5 = unused
-    // r6 = buffer (destination in emulated RAM)
-    // r7 = read offset on disc
-    // r8 = read length
-    // r9 = priority flag
+// DVD read from disc image — replacement for func_8030803C (DVDReadPrio).
+// Uses gcrecomp's disc_read() API to read from the mounted ISO.
+static void dvd_read_from_disc(PPCContext* ctx, Memory* mem) {
     uint32_t info_addr = ctx->r[3];
     uint32_t buf_addr  = ctx->r[6];
     uint32_t offset    = ctx->r[7];
     uint32_t length    = ctx->r[8];
 
-    if (g_iso_file && buf_addr >= 0x80000000 && length > 0 && length < 0x01000000) {
+    if (ww::is_disc_mounted() && buf_addr >= 0x80000000 && length > 0 && length < 0x01000000) {
         uint8_t* dst = mem->translate(buf_addr);
         if (dst) {
-            fseek(g_iso_file, offset, SEEK_SET);
-            size_t read = fread(dst, 1, length, g_iso_file);
+            size_t read = ww::disc_read(offset, dst, length);
             if (read == length) {
-                // Write completion status to the command block
-                // DVDFileInfo offset 712 (0x2C8) = status field
                 mem->write16(info_addr + 712, 0);  // Status = done
-                ctx->r[3] = 1;  // Return success
-                fprintf(stderr, "[DVD] Read %u bytes from ISO offset 0x%08X → 0x%08X\n",
-                        length, offset, buf_addr);
+                ctx->r[3] = 1;
+                fprintf(stderr, "[DVD] Read %u bytes from disc offset 0x%08X → 0x%08X\n",
+                        (unsigned)length, offset, buf_addr);
                 return;
             }
         }
     }
 
     fprintf(stderr, "[DVD] Read failed: buf=0x%08X off=0x%08X len=%u\n",
-            buf_addr, offset, length);
-    ctx->r[3] = 0;  // Return failure
+            buf_addr, offset, (unsigned)length);
+    ctx->r[3] = 0;
 }
 
 // Load DOL sections into emulated memory
@@ -235,73 +221,6 @@ static bool load_dol_into_memory(const char* path, Memory& mem) {
 // Load FST (File System Table) from a GameCube ISO into emulated memory.
 // The FST is needed for the game's own DVDConvertPathToEntrynum function to
 // resolve file paths to disc offsets.
-static bool load_fst_from_iso(const char* iso_path, Memory& mem) {
-    FILE* fp = fopen(iso_path, "rb");
-    if (!fp) {
-        fprintf(stderr, "[ISO] Failed to open: %s\n", iso_path);
-        return false;
-    }
-
-    // Read disc header
-    uint8_t header[0x0440];
-    if (fread(header, 1, sizeof(header), fp) != sizeof(header)) {
-        fprintf(stderr, "[ISO] Failed to read disc header\n");
-        fclose(fp);
-        return false;
-    }
-
-    // Verify game ID (GZLE01)
-    char game_id[7] = {};
-    memcpy(game_id, header, 6);
-    printf("[ISO] Game ID: %s\n", game_id);
-    if (memcmp(header, "GZLE01", 6) != 0) {
-        printf("[ISO] Warning: Expected GZLE01, got %s\n", game_id);
-    }
-
-    // Read FST offset and size from disc header (big-endian)
-    auto read_be32 = [](const uint8_t* p) -> uint32_t {
-        return (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
-    };
-
-    uint32_t fst_offset = read_be32(header + 0x0424);
-    uint32_t fst_size   = read_be32(header + 0x0428);
-    printf("[ISO] FST offset: 0x%08X, size: %u bytes\n", fst_offset, fst_size);
-
-    if (fst_size == 0 || fst_size > 0x100000) {  // Sanity check: < 1MB
-        fprintf(stderr, "[ISO] Invalid FST size\n");
-        fclose(fp);
-        return false;
-    }
-
-    // Read FST data from disc
-    std::vector<uint8_t> fst_data(fst_size);
-    fseek(fp, fst_offset, SEEK_SET);
-    if (fread(fst_data.data(), 1, fst_size, fp) != fst_size) {
-        fprintf(stderr, "[ISO] Failed to read FST data\n");
-        fclose(fp);
-        return false;
-    }
-
-    // Load FST into emulated memory at the arena (after the bump allocator area).
-    // The game reads the FST from the address stored at OS_FST_ADDR (0x80000038).
-    // We'll put it right after the main arena start.
-    uint32_t fst_ram_addr = 0x81600000;  // Near top of RAM, below arena end
-    uint8_t* fst_dst = mem.translate(fst_ram_addr);
-    memcpy(fst_dst, fst_data.data(), fst_size);
-
-    // Set OS low-memory FST pointer
-    mem.write32(0x80000038, fst_ram_addr);       // OS_FST_ADDR
-    mem.write32(0x8000003C, fst_size);           // OS_FST_MAX_LEN
-
-    // Count FST entries
-    uint32_t num_entries = read_be32(fst_data.data() + 8);  // Root entry's "next offset" = total entries
-    printf("[ISO] FST loaded at 0x%08X (%u entries, %u bytes)\n",
-           fst_ram_addr, num_entries, fst_size);
-
-    // Keep ISO open for future file reads
-    g_iso_file = fp;
-    return true;
-}
 
 static void print_banner() {
     printf("\n");
@@ -367,43 +286,16 @@ int main(int argc, char** argv) {
     init_low_memory(&g_mem);
     register_os_functions();
 
-    // ---- Load FST from game ISO (optional) ----
+    // ---- Mount disc image (optional) ----
     if (iso_path) {
-        printf("[*] Loading FST from ISO: %s\n", iso_path);
-        if (load_fst_from_iso(iso_path, g_mem)) {
-            printf("[*] FST loaded — disc file access enabled.\n");
-
-            // Print a few FST entries to verify correctness
-            uint32_t fst_addr = g_mem.read32(0x80000038);
-            uint32_t num_entries = g_mem.read32(fst_addr + 8);
-            uint32_t str_table = fst_addr + num_entries * 12;
-            printf("[*] FST sample entries:\n");
-            for (uint32_t i = 1; i < num_entries && i < 20; i++) {
-                uint32_t entry_addr = fst_addr + i * 12;
-                uint32_t flags_name = g_mem.read32(entry_addr);
-                uint32_t offset     = g_mem.read32(entry_addr + 4);
-                uint32_t size       = g_mem.read32(entry_addr + 8);
-                bool is_dir = (flags_name >> 24) & 1;
-                uint32_t name_off = flags_name & 0x00FFFFFF;
-
-                // Read name string
-                char name[64] = {};
-                for (int j = 0; j < 63; j++) {
-                    uint8_t c = g_mem.read8(str_table + name_off + j);
-                    if (c == 0) break;
-                    name[j] = c;
-                }
-                if (is_dir) {
-                    printf("[*]   [%4u] DIR  %-30s parent=%u\n", i, name, offset);
-                } else {
-                    printf("[*]   [%4u] FILE %-30s off=0x%08X size=%u\n", i, name, offset, size);
-                }
-            }
+        printf("[*] Mounting disc image: %s\n", iso_path);
+        if (gcrecomp::mount_disc_image(iso_path, &g_mem)) {
+            printf("[*] Disc mounted — DVD file access enabled.\n");
         } else {
-            printf("[*] WARNING: FST loading failed. Scene loading will not work.\n");
+            printf("[*] WARNING: Disc mount failed. Scene loading will not work.\n");
         }
     } else {
-        printf("[*] No ISO provided (use --iso path.iso for scene loading).\n");
+        printf("[*] No disc image (use --iso path.iso for scene loading).\n");
     }
 
     // ---- Set CPU registers from __init_registers (func_80003278) ----
@@ -463,9 +355,9 @@ int main(int argc, char** argv) {
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
     // Frame timing gate: always return "process frame"
     g_func_table.register_func(0x8003EBD4, frame_gate_replacement);
-    // DVD read from ISO (for indirect calls)
-    if (g_iso_file) {
-        g_func_table.register_func(0x8030803C, dvd_read_from_iso);
+    // DVD read from disc image (for indirect calls)
+    if (is_disc_mounted()) {
+        g_func_table.register_func(0x8030803C, dvd_read_from_disc);
     }
     // Note: Hardware-dependent functions are patched directly in recompiled source
     // as no-op returns (direct bl calls bypass func_table overrides):
