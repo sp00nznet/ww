@@ -496,25 +496,30 @@ int main(int argc, char** argv) {
         printf("[*]   r13(-30712) = 0x%08X, r13(-30708) = 0x%08X (disc offsets)\n",
                g_mem.read32(r13_val - 30712), g_mem.read32(r13_val - 30708));
 
-        // Complete the DVD request: read data from ISO, then invoke callback.
+        // Complete the DVD request: read Stage.arc from ISO into allocated buffer.
+        // The game's DVD path resolution isn't working (disc offset globals are
+        // stale). We directly read the correct file from the FST.
         if (scene_state == 1 && is_disc_mounted()) {
-            // Read the disc offset from the request and the allocated buffers
-            uint32_t disc_off_lo = g_mem.read32(r13_val - 30708);
+            // sea_T/Stage.arc is at disc offset 0x5120DF1C, size 59889 bytes
+            // sea_T/Room44.arc is at 0x51245A50, size 714816 bytes
+            const uint32_t STAGE_ARC_OFFSET = 0x5120DF1C;
+            const uint32_t STAGE_ARC_SIZE   = 59889;
+
             uint32_t buf1_addr = g_mem.read32(r13_val - 30740);  // first buffer
-            uint32_t buf1_size = g_mem.read32(r13_val - 30736);  // first alloc result
             uint32_t buf2_addr = g_mem.read32(r13_val - 30744);  // second buffer
-            uint32_t buf2_size = g_mem.read32(r13_val - 30732);  // second alloc result
 
-            printf("[*] DVD completion: reading from disc offset 0x%08X\n", disc_off_lo);
-            printf("[*]   Buffer 1: 0x%08X (desc=0x%08X)\n", buf1_addr, buf1_size);
-            printf("[*]   Buffer 2: 0x%08X (desc=0x%08X)\n", buf2_addr, buf2_size);
+            printf("[*] Loading Stage.arc (%u bytes) from ISO → 0x%08X\n",
+                   STAGE_ARC_SIZE, buf1_addr);
 
-            // Read stage data from ISO into the allocated buffers
-            if (buf1_addr >= 0x80000000 && buf1_size > 0 && buf1_size < 0x01000000) {
+            if (buf1_addr >= 0x80000000) {
                 uint8_t* dst = g_mem.translate(buf1_addr);
                 if (dst) {
-                    size_t read = disc_read(disc_off_lo, dst, buf1_size);
-                    printf("[*]   Read %zu bytes into buffer 1\n", read);
+                    size_t read = disc_read(STAGE_ARC_OFFSET, dst, STAGE_ARC_SIZE);
+                    printf("[*]   Read %zu bytes of Stage.arc\n", read);
+                    // Print first 16 bytes to verify it's a valid RARC archive
+                    printf("[*]   Header: %02X%02X%02X%02X %02X%02X%02X%02X\n",
+                           dst[0], dst[1], dst[2], dst[3],
+                           dst[4], dst[5], dst[6], dst[7]);
                 }
             }
 
@@ -654,7 +659,10 @@ int main(int argc, char** argv) {
             frame++;
             if (frame <= 10 || frame % 60 == 0) {
                 int16_t ss = (int16_t)g_mem.read16(g_ctx.r[13] - 30754);
-                fprintf(stderr, "[*] Frame %d (scene_state=%d)\n", frame, ss);
+                uint32_t dq = g_mem.read32(g_ctx.r[13] - 26400);
+                uint8_t scene_flag = g_mem.read8(0x803CA701);
+                fprintf(stderr, "[*] Frame %d (state=%d dvdq=0x%X flag=0x%X)\n",
+                        frame, ss, dq, scene_flag);
             }
 
             Sleep(16);  // ~60 FPS
