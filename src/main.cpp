@@ -372,6 +372,33 @@ int main(int argc, char** argv) {
         printf("[*] Loading FST from ISO: %s\n", iso_path);
         if (load_fst_from_iso(iso_path, g_mem)) {
             printf("[*] FST loaded — disc file access enabled.\n");
+
+            // Print a few FST entries to verify correctness
+            uint32_t fst_addr = g_mem.read32(0x80000038);
+            uint32_t num_entries = g_mem.read32(fst_addr + 8);
+            uint32_t str_table = fst_addr + num_entries * 12;
+            printf("[*] FST sample entries:\n");
+            for (uint32_t i = 1; i < num_entries && i < 20; i++) {
+                uint32_t entry_addr = fst_addr + i * 12;
+                uint32_t flags_name = g_mem.read32(entry_addr);
+                uint32_t offset     = g_mem.read32(entry_addr + 4);
+                uint32_t size       = g_mem.read32(entry_addr + 8);
+                bool is_dir = (flags_name >> 24) & 1;
+                uint32_t name_off = flags_name & 0x00FFFFFF;
+
+                // Read name string
+                char name[64] = {};
+                for (int j = 0; j < 63; j++) {
+                    uint8_t c = g_mem.read8(str_table + name_off + j);
+                    if (c == 0) break;
+                    name[j] = c;
+                }
+                if (is_dir) {
+                    printf("[*]   [%4u] DIR  %-30s parent=%u\n", i, name, offset);
+                } else {
+                    printf("[*]   [%4u] FILE %-30s off=0x%08X size=%u\n", i, name, offset, size);
+                }
+            }
         } else {
             printf("[*] WARNING: FST loading failed. Scene loading will not work.\n");
         }
