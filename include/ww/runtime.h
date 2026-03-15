@@ -31,4 +31,9 @@ void register_os_functions();
 RecompiledFunc lookup_os_func(const char* name);
 void set_game_root(const std::string& path);
 
+// ---- Disc image support (delegates to gcrecomp) --------------------------
+inline bool mount_disc_image(const char* p, Memory* m) { return gcrecomp::mount_disc_image(p, m); }
+inline size_t disc_read(uint32_t off, void* dst, size_t len) { return gcrecomp::disc_read(off, dst, len); }
+inline bool is_disc_mounted() { return gcrecomp::is_disc_mounted(); }
+
 } // namespace ww
