@@ -388,23 +388,22 @@ int main(int argc, char** argv) {
     }
 
     // ---- Override problematic functions ----
-    // Trace scene process creation — func_80022CEC uses the fake JKR object
-    extern void func_80022CEC(PPCContext* ctx, Memory* mem);
-    static int g_scene_create_calls = 0;
+    // Replace func_80022CEC — the original hits assert cascades and corrupts
+    // the PPC stack when called with our fake JKR objects. Just set the flag.
     g_func_table.register_func(0x80022CEC, [](PPCContext* ctx, Memory* mem) {
-        if (g_scene_create_calls < 3) {
-            uint32_t sp_before = ctx->r[1];
-            fprintf(stderr, "[SCN] func_80022CEC called (sp=0x%08X)\n", sp_before);
-            func_80022CEC(ctx, mem);
-            fprintf(stderr, "[SCN] func_80022CEC returned r3=0x%08X sp=0x%08X (delta=%d)\n",
-                    ctx->r[3], ctx->r[1], (int32_t)(ctx->r[1] - sp_before));
-            g_scene_create_calls++;
-        } else {
-            func_80022CEC(ctx, mem);
+        if (mem->read32(ctx->r[13] - 30492) == 0) {
+            mem->write32(ctx->r[13] - 30492, 1);
+            fprintf(stderr, "[SCN] Scene process creation (simplified)\n");
         }
+        ctx->r[3] = 1;
     });
     // PPCHalt (0x8030150C): infinite spin loop → return immediately
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
+    // Scene manager execute (0x802558CC) — called per-frame via vtable.
+    // Needs many uninitialized globals (timing objects etc). No-op for now.
+    g_func_table.register_func(0x802558CC, [](PPCContext* ctx, Memory* mem) {
+        // No-op — scene manager execute requires full timing/camera init
+    });
     // Frame timing gate: always return "process frame"
     g_func_table.register_func(0x8003EBD4, frame_gate_replacement);
     // DVD read from disc image (for indirect calls)
@@ -471,7 +470,35 @@ int main(int argc, char** argv) {
 
     // Skip mDoCPd_Create (0x8000C70C) — hangs on PAD/SI hardware init
     // Skip mDoGph_Create (0x8000BC94) — graphics handled by D3D11, heap done above
+    //   BUT: mDoGph_Create also creates the scene manager object. We create it manually.
     // Skip mDoRst_Create (0x80007A70) — reset controller, might need HW
+
+    // ---- Create scene manager object manually ----
+    // mDoGph_Create calls func_80255354 → func_8025527C to create the scene manager.
+    // The scene manager is stored at r13(-27984). Without it, the per-frame scene
+    // dispatch (func_8000AF2C) crashes trying to call a vtable method on NULL.
+    printf("[*]   Creating scene manager object...\n");
+    {
+        // Use a fixed address in our scratch area (above any bump allocations)
+        uint32_t mgr_addr = 0x817FFA00;
+        memset(g_mem.translate(mgr_addr), 0, 64);
+
+        // Set vtable pointer at +0 (vtable at 0x80395C20 in DOL data)
+        g_mem.write32(mgr_addr + 0, 0x80395C20);
+        // Set +12 to 0xFFFFFFFF (uninitialized sentinel)
+        g_mem.write32(mgr_addr + 12, 0xFFFFFFFF);
+
+        // Store at r13(-27984) — the scene manager global
+        g_mem.write32(g_ctx.r[13] - 27984, mgr_addr);
+
+        printf("[*]   Scene manager at 0x%08X (vtable=0x80395C20)\n", mgr_addr);
+
+        // Verify the vtable has valid function pointers
+        uint32_t vtable_addr = 0x80395C20;
+        printf("[*]   Vtable[0]=0x%08X [1]=0x%08X [2]=0x%08X\n",
+               g_mem.read32(vtable_addr), g_mem.read32(vtable_addr + 4),
+               g_mem.read32(vtable_addr + 8));
+    }
 
     printf("[*]   fapGm_Create (game framework)...\n"); fflush(stdout);
     func_80023218(&g_ctx, &g_mem);
