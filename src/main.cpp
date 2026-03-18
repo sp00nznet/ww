@@ -51,6 +51,12 @@ extern void func_8000AC3C(PPCContext* ctx, Memory* mem);  // mDoGph_gInf_c::chan
 // DVD queue completion handler
 extern void func_80302288(PPCContext* ctx, Memory* mem);  // Process completed DVD requests
 
+// Framework process creation
+extern void func_80018430(PPCContext* ctx, Memory* mem);  // Execute creation request (call create func)
+
+// JKRArchive resource lookup — we need to intercept this
+extern void func_802B6FEC(PPCContext* ctx, Memory* mem);  // JKRFileLoader::getGlbResource
+
 // From main01__Fv (0x80006338) — the REAL game loop:
 extern void func_80006338(PPCContext* ctx, Memory* mem);  // main01 (init + game loop)
 extern void func_8000C70C(PPCContext* ctx, Memory* mem);  // mDoCPd_Create (controller init)
@@ -123,6 +129,29 @@ static void idle_loop_replacement(PPCContext* ctx, Memory* mem) {
 // allocator func_802B0434 with a simple bump allocator from the arena.
 static uint32_t g_bump_alloc_ptr = 0x80400000;  // Start of arena
 static const uint32_t BUMP_ALLOC_END = 0x81700000;  // End of arena
+
+// ---- Fake JKR Archive Object ----
+// We create a minimal fake JKRArchive-compatible object in emulated RAM so the
+// game's scene creation code (func_80022CEC) can use it as if it were a real
+// mounted archive. The object needs a valid vtable pointer and a "CASH" magic.
+//
+// Layout in emulated RAM (top of arena, well above game allocations):
+//   0x817FFB00: Fake vtable (8 entries pointing to no-op function 0x8030150C)
+//   0x817FFC00: Fake JKR object (88 bytes)
+//     +0:  vtable ptr → 0x817FFB00
+//     +44: 0x43415348 ("CASH" magic for mount list matching)
+//     +52: refcount (0)
+//     +72: mount point (non-null, points to root "/" string)
+//   0x817FFE00: RARC buffer pointer (GC addr of decompressed archive)
+//   0x817FFE04: RARC buffer size
+//   0x817FFE08: "/" string for mount point
+
+static const uint32_t FAKE_VTABLE_ADDR   = 0x817FFB00;
+static const uint32_t FAKE_JKR_OBJ_ADDR  = 0x817FFC00;
+static const uint32_t RARC_BUF_PTR_ADDR  = 0x817FFE00;
+static const uint32_t RARC_BUF_SIZE_ADDR = 0x817FFE04;
+static const uint32_t ROOT_STRING_ADDR   = 0x817FFE08;
+static const uint32_t NOOP_FUNC_ADDR     = 0x8030150C;  // PPCHalt (replaced with no-op)
 
 static void bump_alloc_replacement(PPCContext* ctx, Memory* mem) {
     // func_802B0434(r3=size, r4=align, r5=heap)
@@ -244,6 +273,10 @@ static void print_banner() {
 }
 
 int main(int argc, char** argv) {
+    // Force unbuffered stdout/stderr so output isn't lost when redirected
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+
     print_banner();
 
     // ---- Determine paths ----
@@ -354,6 +387,21 @@ int main(int argc, char** argv) {
     }
 
     // ---- Override problematic functions ----
+    // Replace func_80022CEC (scene process creation) entirely.
+    // The original function queries JKR archives, creates a scene process, and
+    // registers it with the framework. The JKR queries fail in our runtime
+    // (no properly mounted archives) causing assert cascades that corrupt the
+    // stack. Instead, we set the "created" flag and return success, letting the
+    // framework's existing scene state machine handle things.
+    extern void func_80022CEC(PPCContext* ctx, Memory* mem);
+    g_func_table.register_func(0x80022CEC, [](PPCContext* ctx, Memory* mem) {
+        // Set the "scene created" flag at r13(-30492) if not already set
+        if (mem->read32(ctx->r[13] - 30492) == 0) {
+            mem->write32(ctx->r[13] - 30492, 1);
+            fprintf(stderr, "[SCN] Scene process creation (simplified): set created flag\n");
+        }
+        ctx->r[3] = 1;  // Return success
+    });
     // PPCHalt (0x8030150C): infinite spin loop → return immediately
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
     // Frame timing gate: always return "process frame"
@@ -388,9 +436,27 @@ int main(int argc, char** argv) {
         g_mem.write32(g_ctx.r[13] - 27056, fake_heap);  // sCurrentHeap
         g_mem.write32(g_ctx.r[13] - 30640, fake_heap);  // getCurrentHeap result
         g_mem.write32(g_ctx.r[13] - 30648, fake_heap);  // func_800118C0 heap ptr
+        g_mem.write32(g_ctx.r[13] - 30632, fake_heap);  // func_80011AB4 archive heap
 
         printf("[*] Bump allocator: 0x%08X - 0x%08X\n",
                g_bump_alloc_ptr, BUMP_ALLOC_END);
+
+        // Set up fake JKR archive object for func_802B6FEC
+        // Fake vtable: all 8 entries point to our no-op function (PPCHalt replacement)
+        for (int i = 0; i < 8; i++) {
+            g_mem.write32(FAKE_VTABLE_ADDR + i * 4, NOOP_FUNC_ADDR);
+        }
+        // Root "/" string
+        g_mem.write8(ROOT_STRING_ADDR, '/');
+        g_mem.write8(ROOT_STRING_ADDR + 1, 0);
+        // Fake JKR object
+        memset(g_mem.translate(FAKE_JKR_OBJ_ADDR), 0, 88);
+        g_mem.write32(FAKE_JKR_OBJ_ADDR + 0, FAKE_VTABLE_ADDR);    // vtable
+        g_mem.write32(FAKE_JKR_OBJ_ADDR + 44, 0x43415348);         // "CASH" magic
+        g_mem.write32(FAKE_JKR_OBJ_ADDR + 52, 0);                  // refcount
+        g_mem.write32(FAKE_JKR_OBJ_ADDR + 72, ROOT_STRING_ADDR);   // mount point "/"
+        printf("[*] Fake JKR object at 0x%08X (vtable=0x%08X)\n",
+               FAKE_JKR_OBJ_ADDR, FAKE_VTABLE_ADDR);
     }
     fflush(stdout);
 
@@ -413,6 +479,57 @@ int main(int argc, char** argv) {
     printf("[*]   Framework post-init (func_80022DF8)...\n"); fflush(stdout);
     func_80022DF8(&g_ctx, &g_mem);
     printf("[*] Game framework initialized.\n");
+
+    // Diagnostic: check creation queue and process tree state
+    {
+        uint32_t q_root = 0x803A72C0;
+        // Dump first 64 bytes of creation queue structure
+        // Creation queue at 0x803A72C0: check all key offsets
+        printf("[*]   Creation Q: +36=0x%08X +40=0x%08X +44=0x%08X\n",
+               g_mem.read32(q_root + 36), g_mem.read32(q_root + 40),
+               g_mem.read32(q_root + 44));
+        printf("[*]   Creation Q: +0=0x%08X +4=0x%08X +8=0x%08X +12=0x%08X\n",
+               g_mem.read32(q_root + 0), g_mem.read32(q_root + 4),
+               g_mem.read32(q_root + 8), g_mem.read32(q_root + 12));
+        // Process tree
+        printf("[*]   Tree: +0=0x%08X +4=0x%08X +8=0x%08X\n",
+               g_mem.read32(0x803726A0 + 0), g_mem.read32(0x803726A0 + 4),
+               g_mem.read32(0x803726A0 + 8));
+        // Root scene process object dump
+        uint32_t root_scn = g_mem.read32(g_ctx.r[13] - 30488);
+        printf("[*]   Root scene @r13(-30488) = 0x%08X\n", root_scn);
+        if (root_scn >= 0x80000000 && root_scn < 0x82000000) {
+            printf("[*]     Scene obj: +0=0x%08X +4=0x%08X +8=0x%08X +12=0x%08X\n",
+                   g_mem.read32(root_scn), g_mem.read32(root_scn + 4),
+                   g_mem.read32(root_scn + 8), g_mem.read32(root_scn + 12));
+            printf("[*]     Scene obj: +16=0x%08X +20=0x%08X +24=0x%08X +28=0x%08X\n",
+                   g_mem.read32(root_scn + 16), g_mem.read32(root_scn + 20),
+                   g_mem.read32(root_scn + 24), g_mem.read32(root_scn + 28));
+        }
+        printf("[*]   Framework dispatch @0x803950D8+16 = 0x%08X\n",
+               g_mem.read32(0x803950D8 + 16));
+        // Handler vtable at 0x80371D58
+        printf("[*]   Handler vtable @0x80371D58:\n");
+        for (int i = 0; i < 8; i++) {
+            printf("[*]     [%d] = 0x%08X\n", i, g_mem.read32(0x80371D58 + i*4));
+        }
+        // Check the create thread proc queue address
+        printf("[*]   Ready queue @0x803BCEC8: +0=0x%08X +4=0x%08X +8=0x%08X\n",
+               g_mem.read32(0x803BCEC8), g_mem.read32(0x803BCEC8 + 4),
+               g_mem.read32(0x803BCEC8 + 8));
+        // Check what resource path the scene create function looks for
+        // func_80022CEC calls func_802B6FEC(0x8033BB44, heap, 0)
+        {
+            uint32_t str_addr = 0x8033BB44;
+            uint8_t* p = g_mem.translate(str_addr);
+            char path[64] = {};
+            if (p) for (int i = 0; i < 63 && p[i]; i++) path[i] = p[i];
+            printf("[*]   Scene create resource path @0x%08X: \"%s\"\n", str_addr, path);
+            // Also check the JKR mount list at 0x803ED77C
+            uint32_t mount_list = g_mem.read32(0x803ED77C);
+            printf("[*]   JKR mount list @0x803ED77C = 0x%08X\n", mount_list);
+        }
+    }
     fflush(stdout);
 
     // Process any DVD requests enqueued during framework init.
@@ -496,30 +613,75 @@ int main(int argc, char** argv) {
         printf("[*]   r13(-30712) = 0x%08X, r13(-30708) = 0x%08X (disc offsets)\n",
                g_mem.read32(r13_val - 30712), g_mem.read32(r13_val - 30708));
 
-        // Complete the DVD request: read Stage.arc from ISO into allocated buffer.
-        // The game's DVD path resolution isn't working (disc offset globals are
-        // stale). We directly read the correct file from the FST.
+        // Complete the DVD request: read Stage.arc from ISO, decompress Yaz0,
+        // parse RARC, and place decompressed data where the game expects it.
+        // The game's DVD thread normally handles this pipeline:
+        //   1. Read compressed data from disc
+        //   2. Yaz0 decompress
+        //   3. Place decompressed RARC in the target buffer
+        //   4. Fire completion callback
         if (scene_state == 1 && is_disc_mounted()) {
             // sea_T/Stage.arc is at disc offset 0x5120DF1C, size 59889 bytes
-            // sea_T/Room44.arc is at 0x51245A50, size 714816 bytes
             const uint32_t STAGE_ARC_OFFSET = 0x5120DF1C;
             const uint32_t STAGE_ARC_SIZE   = 59889;
 
             uint32_t buf1_addr = g_mem.read32(r13_val - 30740);  // first buffer
-            uint32_t buf2_addr = g_mem.read32(r13_val - 30744);  // second buffer
 
-            printf("[*] Loading Stage.arc (%u bytes) from ISO → 0x%08X\n",
-                   STAGE_ARC_SIZE, buf1_addr);
+            printf("[*] Loading Stage.arc (%u bytes) from ISO...\n", STAGE_ARC_SIZE);
 
             if (buf1_addr >= 0x80000000) {
-                uint8_t* dst = g_mem.translate(buf1_addr);
-                if (dst) {
-                    size_t read = disc_read(STAGE_ARC_OFFSET, dst, STAGE_ARC_SIZE);
-                    printf("[*]   Read %zu bytes of Stage.arc\n", read);
-                    // Print first 16 bytes to verify it's a valid RARC archive
-                    printf("[*]   Header: %02X%02X%02X%02X %02X%02X%02X%02X\n",
-                           dst[0], dst[1], dst[2], dst[3],
-                           dst[4], dst[5], dst[6], dst[7]);
+                // Read compressed data into a temporary host buffer
+                std::vector<uint8_t> compressed(STAGE_ARC_SIZE);
+                size_t read = disc_read(STAGE_ARC_OFFSET, compressed.data(), STAGE_ARC_SIZE);
+                printf("[*]   Read %zu bytes from disc\n", read);
+
+                if (read == STAGE_ARC_SIZE) {
+                    // Check if it's Yaz0 compressed
+                    if (gcrecomp::yaz0_is_compressed(compressed.data(), compressed.size())) {
+                        uint32_t decomp_size = gcrecomp::yaz0_decompressed_size(
+                            compressed.data(), compressed.size());
+                        printf("[*]   Yaz0 compressed: %u → %u bytes\n",
+                               STAGE_ARC_SIZE, decomp_size);
+
+                        // Decompress into emulated RAM at the allocated buffer
+                        uint8_t* dst = g_mem.translate(buf1_addr);
+                        size_t written = gcrecomp::yaz0_decompress(
+                            compressed.data(), compressed.size(),
+                            dst, decomp_size);
+
+                        if (written == decomp_size) {
+                            printf("[*]   Yaz0 decompressed %zu bytes → 0x%08X\n",
+                                   written, buf1_addr);
+                            // Store RARC buffer location for JKR resource lookups
+                            g_mem.write32(RARC_BUF_PTR_ADDR, buf1_addr);
+                            g_mem.write32(RARC_BUF_SIZE_ADDR, decomp_size);
+
+                            // Verify RARC header
+                            if (gcrecomp::rarc_is_archive(dst, written)) {
+                                gcrecomp::RARCArchive archive;
+                                if (gcrecomp::rarc_parse(dst, written, archive)) {
+                                    printf("[*]   RARC archive contents:\n");
+                                    for (const auto& f : archive.files) {
+                                        printf("[*]     %s (%u bytes)\n",
+                                               f.path.c_str(), f.data_size);
+                                    }
+                                } else {
+                                    printf("[*]   WARNING: RARC parse failed\n");
+                                }
+                            } else {
+                                printf("[*]   Header: %02X%02X%02X%02X (not RARC?)\n",
+                                       dst[0], dst[1], dst[2], dst[3]);
+                            }
+                        } else {
+                            printf("[*]   WARNING: Yaz0 decompression incomplete\n");
+                        }
+                    } else {
+                        // Not compressed — copy directly to emulated RAM
+                        uint8_t* dst = g_mem.translate(buf1_addr);
+                        memcpy(dst, compressed.data(), compressed.size());
+                        printf("[*]   Copied %zu bytes (uncompressed) → 0x%08X\n",
+                               compressed.size(), buf1_addr);
+                    }
                 }
             }
 
@@ -601,15 +763,37 @@ int main(int argc, char** argv) {
             func_80007224(&g_ctx, &g_mem);  // mDoAud_Execute
 
             // Pump DVD request queue — process pending async requests.
-            // On real hardware, the DVD thread + DI interrupts handle this.
-            // We check the queue, set state to 2 (data ready), and invoke the
-            // completion callback to process the loaded data.
+            // On real hardware, the DVD thread + DI interrupts handle this:
+            //   1. Read compressed data from disc
+            //   2. Yaz0 decompress in-place
+            //   3. Fire completion callback
+            // We emulate this by checking if the loaded data is Yaz0-compressed
+            // and decompressing it before invoking the callback.
             {
                 uint32_t dvd_q = g_mem.read32(g_ctx.r[13] - 26400);
                 int16_t cur_state = (int16_t)g_mem.read16(g_ctx.r[13] - 30754);
                 if (dvd_q != 0 && cur_state == 1 && is_disc_mounted()) {
                     uint32_t cb = g_mem.read32(dvd_q + 0);
                     if (cb != 0) {
+                        // Check if the loaded buffer contains Yaz0 data and decompress
+                        uint32_t buf_addr = g_mem.read32(g_ctx.r[13] - 30740);
+                        if (buf_addr >= 0x80000000) {
+                            uint8_t* buf = g_mem.translate(buf_addr);
+                            if (buf && gcrecomp::yaz0_is_compressed(buf, 16)) {
+                                uint32_t decomp_size = gcrecomp::yaz0_decompressed_size(buf, 16);
+                                // Decompress to a temp buffer then copy back
+                                // (can't decompress in-place since source overlaps dest)
+                                auto decompressed = gcrecomp::yaz0_decompress(buf, decomp_size * 2);
+                                if (!decompressed.empty()) {
+                                    memcpy(buf, decompressed.data(), decompressed.size());
+                                    if (frame <= 5) {
+                                        fprintf(stderr, "[DVD] Yaz0 decompressed %zu bytes in buffer 0x%08X\n",
+                                                decompressed.size(), buf_addr);
+                                    }
+                                }
+                            }
+                        }
+
                         // Advance state and invoke callback
                         g_mem.write16(g_ctx.r[13] - 30754, 2);
                         // Clear queue head
@@ -625,6 +809,39 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // Pump framework creation queue — process pending creation requests.
+            // The original game has a background thread that processes these.
+            // In our single-threaded model, we process them per-frame.
+            // Queue at 0x803A72C0: +36=list head, +44=count
+            {
+                const uint32_t CREATE_Q = 0x803A72C0;
+                uint32_t pending_count = g_mem.read32(CREATE_Q + 44);
+                if (pending_count > 0) {
+                    uint32_t item_addr = g_mem.read32(CREATE_Q + 36);
+                    uint32_t sentinel = CREATE_Q + 36;  // list sentinel address
+                    int processed = 0;
+                    while (item_addr != 0 && item_addr != sentinel && processed < 32) {
+                        uint8_t created = g_mem.read8(item_addr + 12);
+                        if (created == 0) {
+                            // Call func_80018430 to execute the creation request
+                            fprintf(stderr, "[FW] Before: item+12=%u item+28=0x%08X item+20=0x%08X\n",
+                                    g_mem.read8(item_addr + 12),
+                                    g_mem.read32(item_addr + 28),
+                                    g_mem.read32(item_addr + 20));
+                            g_ctx.r[3] = item_addr;
+                            func_80018430(&g_ctx, &g_mem);
+                            fprintf(stderr, "[FW] After:  item+12=%u item+28=0x%08X r3=0x%08X\n",
+                                    g_mem.read8(item_addr + 12),
+                                    g_mem.read32(item_addr + 28),
+                                    g_ctx.r[3]);
+                            processed++;
+                        }
+                        // Next item in linked list (item+0 = prev, item+4 = next)
+                        item_addr = g_mem.read32(item_addr + 4);
+                    }
+                }
+            }
+
             func_800231E4(&g_ctx, &g_mem);  // fapGm_Execute
             func_80006264(&g_ctx, &g_mem);  // main loop cleanup
 
@@ -633,8 +850,14 @@ int main(int argc, char** argv) {
                 int16_t ss = (int16_t)g_mem.read16(g_ctx.r[13] - 30754);
                 uint32_t dq = g_mem.read32(g_ctx.r[13] - 26400);
                 uint8_t scene_flag = g_mem.read8(0x803CA701);
-                fprintf(stderr, "[*] Frame %d (state=%d dvdq=0x%X flag=0x%X)\n",
-                        frame, ss, dq, scene_flag);
+                // Process tree root at 0x803726A0 (fapGm process list)
+                uint32_t tree_ptr = g_mem.read32(0x803726A0);
+                uint32_t tree_count = g_mem.read32(0x803726A0 + 8);
+                // Scene manager at r13(-27984)
+                uint32_t scene_mgr = g_mem.read32(g_ctx.r[13] - 27984);
+                fprintf(stderr, "[*] Frame %d (state=%d dvdq=0x%X flag=0x%X tree=0x%X/%u scnmgr=0x%X)\n",
+                        frame, ss, dq, scene_flag,
+                        tree_ptr, tree_count, scene_mgr);
             }
 
             Sleep(16);  // ~60 FPS
