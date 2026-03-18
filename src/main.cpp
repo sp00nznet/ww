@@ -53,6 +53,7 @@ extern void func_80302288(PPCContext* ctx, Memory* mem);  // Process completed D
 
 // Framework process creation
 extern void func_80018430(PPCContext* ctx, Memory* mem);  // Execute creation request (call create func)
+extern void func_80018BB8(PPCContext* ctx, Memory* mem);  // Process creation queue (0x803A72C0)
 
 // JKRArchive resource lookup — we need to intercept this
 extern void func_802B6FEC(PPCContext* ctx, Memory* mem);  // JKRFileLoader::getGlbResource
@@ -387,20 +388,20 @@ int main(int argc, char** argv) {
     }
 
     // ---- Override problematic functions ----
-    // Replace func_80022CEC (scene process creation) entirely.
-    // The original function queries JKR archives, creates a scene process, and
-    // registers it with the framework. The JKR queries fail in our runtime
-    // (no properly mounted archives) causing assert cascades that corrupt the
-    // stack. Instead, we set the "created" flag and return success, letting the
-    // framework's existing scene state machine handle things.
+    // Trace scene process creation — func_80022CEC uses the fake JKR object
     extern void func_80022CEC(PPCContext* ctx, Memory* mem);
+    static int g_scene_create_calls = 0;
     g_func_table.register_func(0x80022CEC, [](PPCContext* ctx, Memory* mem) {
-        // Set the "scene created" flag at r13(-30492) if not already set
-        if (mem->read32(ctx->r[13] - 30492) == 0) {
-            mem->write32(ctx->r[13] - 30492, 1);
-            fprintf(stderr, "[SCN] Scene process creation (simplified): set created flag\n");
+        if (g_scene_create_calls < 3) {
+            uint32_t sp_before = ctx->r[1];
+            fprintf(stderr, "[SCN] func_80022CEC called (sp=0x%08X)\n", sp_before);
+            func_80022CEC(ctx, mem);
+            fprintf(stderr, "[SCN] func_80022CEC returned r3=0x%08X sp=0x%08X (delta=%d)\n",
+                    ctx->r[3], ctx->r[1], (int32_t)(ctx->r[1] - sp_before));
+            g_scene_create_calls++;
+        } else {
+            func_80022CEC(ctx, mem);
         }
-        ctx->r[3] = 1;  // Return success
     });
     // PPCHalt (0x8030150C): infinite spin loop → return immediately
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
@@ -812,31 +813,24 @@ int main(int argc, char** argv) {
             // Pump framework creation queue — process pending creation requests.
             // The original game has a background thread that processes these.
             // In our single-threaded model, we process them per-frame.
-            // Queue at 0x803A72C0: +36=list head, +44=count
             {
                 const uint32_t CREATE_Q = 0x803A72C0;
                 uint32_t pending_count = g_mem.read32(CREATE_Q + 44);
                 if (pending_count > 0) {
                     uint32_t item_addr = g_mem.read32(CREATE_Q + 36);
-                    uint32_t sentinel = CREATE_Q + 36;  // list sentinel address
-                    int processed = 0;
-                    while (item_addr != 0 && item_addr != sentinel && processed < 32) {
+                    uint32_t sentinel = CREATE_Q + 36;
+                    while (item_addr != 0 && item_addr != sentinel) {
                         uint8_t created = g_mem.read8(item_addr + 12);
                         if (created == 0) {
-                            // Call func_80018430 to execute the creation request
-                            fprintf(stderr, "[FW] Before: item+12=%u item+28=0x%08X item+20=0x%08X\n",
-                                    g_mem.read8(item_addr + 12),
-                                    g_mem.read32(item_addr + 28),
-                                    g_mem.read32(item_addr + 20));
                             g_ctx.r[3] = item_addr;
                             func_80018430(&g_ctx, &g_mem);
-                            fprintf(stderr, "[FW] After:  item+12=%u item+28=0x%08X r3=0x%08X\n",
-                                    g_mem.read8(item_addr + 12),
-                                    g_mem.read32(item_addr + 28),
-                                    g_ctx.r[3]);
-                            processed++;
+                            if (frame <= 5) {
+                                fprintf(stderr, "[FW] Creation: item+12=%u item+28=0x%08X sp=0x%08X\n",
+                                        g_mem.read8(item_addr + 12),
+                                        g_mem.read32(item_addr + 28),
+                                        g_ctx.r[1]);
+                            }
                         }
-                        // Next item in linked list (item+0 = prev, item+4 = next)
                         item_addr = g_mem.read32(item_addr + 4);
                     }
                 }
