@@ -8,6 +8,8 @@
 // =============================================================================
 
 #include "gcrecomp/runtime.h"
+#include "gcrecomp/yaz0.h"
+#include "gcrecomp/rarc.h"
 
 namespace ww {
 

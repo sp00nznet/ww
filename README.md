@@ -127,7 +127,8 @@ cmake --build build --target ww_recompiler --config Release
 #   recomp_0066.cpp (VI wait, assert), recomp_0006.cpp (GX sync),
 #   recomp_0000.cpp (exception handler), recomp_0067.cpp (camera GX),
 #   recomp_0075.cpp (DVD read), recomp_0074.cpp (async DVD),
-#   recomp_0080.cpp (bctr tail call), recomp_0001.cpp (heap)
+#   recomp_0080.cpp (bctr tail call), recomp_0001.cpp (heap),
+#   recomp_0064.cpp (JKR resource lookup)
 
 # Build the game runtime + recompiled code
 cmake --build build --target ww_launcher --config Release
@@ -212,7 +213,7 @@ load/store operations with GQR-based dequantization.
 
 ### Runtime Status
 
-The game is **running with scene data loading from disc**:
+The game is **running with Yaz0 decompression and RARC archive parsing from disc**:
 
 - All 41 translation units compile with MSVC (C++20)
 - DOL loaded, all 100 static constructors complete
@@ -220,12 +221,28 @@ The game is **running with scene data loading from disc**:
 - Main game loop running at ~60 FPS with full `fapGm_Execute` dispatch
 - **Root scene created and scene loading state machine complete** (0→1→2→3→-1)
 - **FST loaded from game ISO** (2391 files parsed)
-- **Stage.arc (Yaz0/RARC archive) loaded from disc** into emulated RAM
-- **DVD request queue processed per-frame** with completion callbacks
+- **Stage.arc Yaz0 decompressed** (59KB compressed → 299KB decompressed)
+- **RARC archive parsed** — 9 files extracted (textures, stage data, skybox models)
+- **DVD request queue processed per-frame** with Yaz0 decompression
+- **Framework creation queue pumped per-frame** (emulates background thread)
 - Bump allocator replaces JKR heap system (mDoGph_Create skipped)
-- 12 hardware-dependent functions patched in recompiled source as no-ops
+- 14 hardware-dependent functions patched in recompiled source
 - VRetrace timing gate returns 0 naturally (no bypass needed)
 - GX camera matrix, draw-done sync, VI busy-waits all stubbed
+
+### Stage.arc Contents (sea_T — Title Screen)
+
+```
+tex/cloudtx_01.bti   4,128 bytes   Cloud texture
+tex/cloudtx_02.bti   4,128 bytes   Cloud texture
+tex/cloudtx_03.bti   4,128 bytes   Cloud texture
+dzs/stage.dzs         4,608 bytes   Stage data/settings
+dat/event_list.dat  227,804 bytes   Event scripts
+bdl/vr_back_cloud.bdl 40,096 bytes  Skybox cloud model
+bdl/vr_kasumi_mae.bdl  3,808 bytes  Skybox haze model
+bdl/vr_sky.bdl         6,496 bytes  Skybox model
+bdl/vr_uso_umi.bdl     3,072 bytes  Sea surface model
+```
 
 ### What Works
 
@@ -235,20 +252,31 @@ The game is **running with scene data loading from disc**:
 | Game framework (fapGm) | Working — full layer dispatch every frame |
 | Scene change requests | Working — state machine cycles correctly |
 | DVD/ISO file access | Working — FST parsed, Stage.arc loaded from disc |
+| Yaz0 decompression | Working — 59KB → 299KB decompressed correctly |
+| RARC archive parsing | Working — 9 files extracted from Stage.arc |
 | Per-frame DVD queue | Working — processes async requests synchronously |
+| Per-frame creation queue | Working — emulates background framework thread |
 | Memory allocation | Working — bump allocator replaces JKR heap |
 | Time Base (TB) register | Working — host QueryPerformanceCounter scaled to 40.5MHz |
 
 ### Current Blocker
 
-The scene **loads** but doesn't **initialize** — the scene flag (`0x803CA701`) stays 0. This is because the game's **DVD loading thread** (which decompresses Yaz0 archives, parses RARC data, and creates scene actors) runs as a separate GameCube thread that our single-threaded model doesn't execute. The raw Yaz0 data is in RAM but never decompressed/parsed.
+The framework's **process tree is empty** — the scene process is created but not yet
+inserted into the execution tree. Wind Waker uses a multi-threaded framework where a
+background thread creates processes and moves them to a "ready queue" for the main thread
+to pick up. Our per-frame creation pump calls the create function successfully, but the
+"move to ready queue" step (normally done by the background thread) isn't emulated yet.
+
+The decompressed archive data is in RAM and accessible. The next step is wiring up the
+framework's process tree so `fapGm_Execute` has processes to dispatch.
 
 ### Next Steps
 
-- **DVD thread emulation**: Run the DVD thread's work loop (Yaz0 decompress → RARC parse → actor creation) in the per-frame processing
-- **Yaz0 decompression**: Verify recompiled decompressor works, or add native implementation
+- **Process tree insertion**: Move created scene process into the framework tree
+- **JKR archive mounting**: Create proper JKRMemArchive objects from RARC data
+- **Room archive loading**: Room44.arc (714KB) needs same Yaz0+RARC pipeline
 - **GX rendering**: TEV stage → HLSL shader pipeline for actual pixel output
-- **REL module loading**: Scene data includes relocatable code modules
+- **REL module loading**: Scene data may include relocatable code modules
 
 ## Standing on the Shoulders of Giants
 
