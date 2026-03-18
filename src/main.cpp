@@ -400,10 +400,13 @@ int main(int argc, char** argv) {
     // PPCHalt (0x8030150C): infinite spin loop → return immediately
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
     // Scene manager execute (0x802558CC) — called per-frame via vtable.
-    // Needs many uninitialized globals (timing objects etc). No-op for now.
-    g_func_table.register_func(0x802558CC, [](PPCContext* ctx, Memory* mem) {
-        // No-op — scene manager execute requires full timing/camera init
-    });
+    // Needs timing globals at r13(-26600) not yet initialized. No-op for now.
+    g_func_table.register_func(0x802558CC, [](PPCContext* ctx, Memory* mem) {});
+    // func_8000AF2C (mDoGph_gInf_c execute) — the scene manager's per-frame
+    // dispatch. After calling the vtable method, it does extensive camera/rendering
+    // setup that accesses many uninitialized globals, causing tight loops on bad
+    // memory. Override as no-op until rendering subsystem is initialized.
+    g_func_table.register_func(0x8000AF2C, [](PPCContext* ctx, Memory* mem) {});
     // Frame timing gate: always return "process frame"
     g_func_table.register_func(0x8003EBD4, frame_gate_replacement);
     // DVD read from disc image (for indirect calls)
@@ -473,31 +476,18 @@ int main(int argc, char** argv) {
     //   BUT: mDoGph_Create also creates the scene manager object. We create it manually.
     // Skip mDoRst_Create (0x80007A70) — reset controller, might need HW
 
-    // ---- Create scene manager object manually ----
-    // mDoGph_Create calls func_80255354 → func_8025527C to create the scene manager.
-    // The scene manager is stored at r13(-27984). Without it, the per-frame scene
-    // dispatch (func_8000AF2C) crashes trying to call a vtable method on NULL.
-    printf("[*]   Creating scene manager object...\n");
+    // ---- Create scene manager manually ----
+    // mDoGph_Create normally creates this via func_80255354 → func_8025527C,
+    // but those functions depend on GX/camera init which we skip. We create the
+    // minimal object directly. The per-frame execute (func_802558CC) is no-op'd.
     {
-        // Use a fixed address in our scratch area (above any bump allocations)
         uint32_t mgr_addr = 0x817FFA00;
         memset(g_mem.translate(mgr_addr), 0, 64);
-
-        // Set vtable pointer at +0 (vtable at 0x80395C20 in DOL data)
-        g_mem.write32(mgr_addr + 0, 0x80395C20);
-        // Set +12 to 0xFFFFFFFF (uninitialized sentinel)
-        g_mem.write32(mgr_addr + 12, 0xFFFFFFFF);
-
-        // Store at r13(-27984) — the scene manager global
+        g_mem.write32(mgr_addr + 0, 0x80395C20);    // vtable
+        g_mem.write32(mgr_addr + 12, 0xFFFFFFFF);   // uninitialized sentinel
+        g_mem.write32(mgr_addr + 28, 1);             // init flag (set by func_80007BBC)
         g_mem.write32(g_ctx.r[13] - 27984, mgr_addr);
-
-        printf("[*]   Scene manager at 0x%08X (vtable=0x80395C20)\n", mgr_addr);
-
-        // Verify the vtable has valid function pointers
-        uint32_t vtable_addr = 0x80395C20;
-        printf("[*]   Vtable[0]=0x%08X [1]=0x%08X [2]=0x%08X\n",
-               g_mem.read32(vtable_addr), g_mem.read32(vtable_addr + 4),
-               g_mem.read32(vtable_addr + 8));
+        printf("[*]   Scene manager at 0x%08X\n", mgr_addr);
     }
 
     printf("[*]   fapGm_Create (game framework)...\n"); fflush(stdout);
