@@ -45,13 +45,17 @@ static std::atomic<bool> g_game_running{false};
 // Parsed BDL models for rendering
 static j3d::J3DModel g_room_model;    // Island terrain
 static j3d::J3DModel g_water_model;   // Ocean water
+static j3d::J3DModel g_sky_model;     // Skybox
 static bool g_room_model_loaded = false;
 static bool g_water_model_loaded = false;
+static bool g_sky_model_loaded = false;
 static bool g_textures_loaded = false;
 static bool g_water_textures_loaded = false;
+static bool g_sky_textures_loaded = false;
 static float g_camera_angle = 0.0f;
 static gcrecomp::gx::GXTexObj g_tex_objs[8] = {};      // room textures
 static gcrecomp::gx::GXTexObj g_water_tex_objs[9] = {}; // water textures
+static gcrecomp::gx::GXTexObj g_sky_tex_objs[4] = {};   // sky textures
 
 // Forward declarations for recompiled functions
 extern void func_8030CFB0(PPCContext* ctx, Memory* mem);  // Small init helper
@@ -366,8 +370,10 @@ static void render_j3d_model(const j3d::J3DModel& model,
 
         if (use_alpha) {
             GXSetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, 0);
+            GXSetZMode(true, GX_LEQUAL, false);  // read depth but don't write (water over terrain)
         } else {
             GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, 0);
+            GXSetZMode(true, GX_LEQUAL, true);
         }
 
         for (const auto& pkt : shape.packets) {
@@ -1139,6 +1145,11 @@ int main(int argc, char** argv) {
                                         j3d::J3DModel model;
                                         if (j3d::j3d_parse(bdl_data, f->data_size, model)) {
                                             j3d::j3d_print_summary(model);
+                                            if (strcmp(*name, "bdl/vr_sky.bdl") == 0) {
+                                                g_sky_model = std::move(model);
+                                                g_sky_model_loaded = true;
+                                                printf("[*]   Stored skybox model for rendering.\n");
+                                            }
                                         }
                                     }
                                 }
@@ -1358,6 +1369,24 @@ int main(int argc, char** argv) {
             GXSetViewport(0, 0, 1280, 720, 0.0f, 1.0f);
             GXSetZMode(true, GX_LEQUAL, true);
             GXSetCullMode(GX_CULL_NONE);
+
+            // Render skybox first (behind everything, no depth write)
+            if (g_sky_model_loaded) {
+                // Skybox uses a much larger scale and no depth
+                float sky_sc = 1.0f / 200000.0f;
+                float sky_mv[3][4] = {
+                    { cy * sky_sc,              0.0f,        sy * sky_sc,              0.0f },
+                    { sx * sy * sky_sc,         cx * sky_sc, -sx * cy * sky_sc,         0.0f },
+                    { -cx * sy * sky_sc,        sx * sky_sc,  cx * cy * sky_sc,         0.0f },
+                };
+                GXLoadPosMtxImm(sky_mv, 0);
+                GXSetCurrentMtx(0);
+                GXSetZMode(false, GX_LEQUAL, false); // no depth for skybox
+                render_j3d_model(g_sky_model, g_sky_tex_objs, g_sky_textures_loaded, false);
+                // Restore scene matrices
+                GXLoadPosMtxImm(mv, 0);
+                GXSetCurrentMtx(0);
+            }
 
             // Render island terrain (opaque)
             render_j3d_model(g_room_model, g_tex_objs, g_textures_loaded, false);
