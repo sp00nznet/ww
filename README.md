@@ -14,12 +14,12 @@
   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ```
 
-**The first-ever static recompilation of a GameCube game.**
+**A static recompilation of a GameCube game to native PC.**
 
 This project takes *The Legend of Zelda: The Wind Waker* (GameCube, 2002) and
 statically recompiles its PowerPC 750CXe (Gekko) machine code into native
 x86-64 C code that runs directly on Windows 11. No emulator. No compatibility
-layer. Just Link, rolling around the Great Sea, at native speed.
+layer. Just the Great Sea, running natively.
 
 ## What Is Static Recompilation?
 
@@ -190,10 +190,10 @@ to Direct3D 11. Audio is decoded from DSP ADPCM and played via XAudio2.
 
 ## Project Status
 
-This is the **first-ever GameCube static recompilation project** to reach
-the pipeline-complete stage. The recompiler can process the full Wind Waker
-DOL, generate C code for all discovered functions, and the runtime provides
-the hardware abstraction needed to run it.
+The recompiler can process the full Wind Waker DOL, generate C code for all
+discovered functions, and the runtime provides the hardware abstraction
+needed to run it. The game renders textured 3D scene geometry from actual
+disc data through a GX→D3D11 translation pipeline at 60fps.
 
 ### Recompiler Statistics
 
