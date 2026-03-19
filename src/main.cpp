@@ -1331,19 +1331,18 @@ int main(int argc, char** argv) {
             // Rotate around Y axis, tilt down to see the island from above
             g_camera_angle += 0.006f;
 
-            float sc = 1.0f / 6000.0f;  // scale to fill more of the screen
+            float sc = 1.0f / 14000.0f;  // scale to fit water + island
 
             // Y rotation (azimuth spin)
             float cy = cosf(g_camera_angle), sy = sinf(g_camera_angle);
-            // X rotation (tilt down ~40 degrees)
-            float tilt_angle = -0.7f;
+            // X rotation (tilt ~45 degrees)
+            float tilt_angle = -0.8f;
             float cx = cosf(tilt_angle), sx = sinf(tilt_angle);
 
-            // MV = Tilt_X * Rotate_Y * Scale, centered on screen
             float mv[3][4] = {
                 { cy * sc,              0.0f,        sy * sc,              0.0f },
-                { sx * sy * sc,         cx * sc,    -sx * cy * sc,        -0.15f },
-                { -cx * sy * sc,        sx * sc,     cx * cy * sc,        -1.0f },
+                { sx * sy * sc,         cx * sc,    -sx * cy * sc,        -0.45f },
+                { -cx * sy * sc,        sx * sc,     cx * cy * sc,         0.0f },
             };
             GXLoadPosMtxImm(mv, 0);
             GXSetCurrentMtx(0);
