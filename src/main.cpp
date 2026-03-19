@@ -958,7 +958,7 @@ int main(int argc, char** argv) {
         printf("[*] Loading Room44.arc (%u bytes, %uKB) from ISO...\n",
                ROOM44_ARC_SIZE, ROOM44_ARC_SIZE / 1024);
 
-        std::vector<uint8_t> room_compressed(ROOM44_ARC_SIZE);
+        static std::vector<uint8_t> room_compressed(ROOM44_ARC_SIZE);
         size_t room_read = disc_read(ROOM44_ARC_OFFSET, room_compressed.data(), ROOM44_ARC_SIZE);
         printf("[*]   Read %zu bytes from disc\n", room_read);
 
