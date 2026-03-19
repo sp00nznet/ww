@@ -1341,17 +1341,18 @@ int main(int argc, char** argv) {
 
             float mv[3][4] = {
                 { cy * sc,              0.0f,        sy * sc,              0.0f },
-                { sx * sy * sc,         cx * sc,    -sx * cy * sc,        -0.45f },
+                { sx * sy * sc,         cx * sc,    -sx * cy * sc,        -0.55f },
                 { -cx * sy * sc,        sx * sc,     cx * cy * sc,         0.0f },
             };
             GXLoadPosMtxImm(mv, 0);
             GXSetCurrentMtx(0);
 
-            // Orthographic projection with aspect correction
+            // Orthographic projection with aspect correction and proper Z
             float proj[4][4] = {};
             proj[0][0] = 720.0f / 1280.0f;
             proj[1][1] = 1.0f;
-            proj[2][2] = 0.001f;
+            proj[2][2] = 0.5f;   // proper Z range for depth buffer precision
+            proj[2][3] = 0.5f;   // offset: view Z=0 maps to depth 0.5
             proj[3][3] = 1.0f;
             GXSetProjection(proj, 0);
             GXSetViewport(0, 0, 1280, 720, 0.0f, 1.0f);
