@@ -1200,31 +1200,98 @@ int main(int argc, char** argv) {
                 GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
                 GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
 
-                // Draw position vertices as triangles with height-based coloring.
-                // BDL vertex data is big-endian — byte-swap each float.
-                // Positions are indexed (not in triangle order) but we draw
-                // sequential triples as triangles for a quick visualization.
-                uint32_t vert_count = pos_array->count;
-                uint32_t tri_verts = (vert_count / 3) * 3;
-                if (tri_verts > 15000) tri_verts = 15000; // cap for performance
+                // Render room geometry using indexed display lists from SHP1.
+                // Each shape batch contains triangle strips/fans with 16-bit
+                // indices into the VTX1 position/color/texcoord arrays.
+                const uint8_t* pos_data = pos_array->data;
+                uint32_t pos_count = pos_array->count;
 
-                GXBegin(GX_TRIANGLES, 0, tri_verts);
-                const uint8_t* vraw = pos_array->data;
-                for (uint32_t i = 0; i < tri_verts; i++) {
-                    // Read big-endian floats
-                    float x = j3d::readf32(vraw + i * 12 + 0);
-                    float y = j3d::readf32(vraw + i * 12 + 4);
-                    float z = j3d::readf32(vraw + i * 12 + 8);
-                    GXPosition3f32(x, y, z);
-                    // Height-based coloring (green terrain)
-                    int yi = (int)(y * 0.1f);
-                    uint8_t r = (uint8_t)std::min(255, std::max(0, 80 + yi));
-                    uint8_t g = (uint8_t)std::min(255, std::max(0, 140 + yi));
-                    uint8_t b = (uint8_t)std::min(255, std::max(0, 60 + yi / 2));
-                    GXColor4u8(r, g, b, 255);
-                    GXSubmitVertex();
+                for (const auto& shape : g_room_model.shapes) {
+                    for (const auto& pkt : shape.packets) {
+                        if (!pkt.display_list || pkt.display_list_size < 4) continue;
+                        const uint8_t* dl = pkt.display_list;
+                        uint32_t dl_end = pkt.display_list_size;
+                        uint32_t dp = 0;
+
+                        // Calculate bytes per vertex from batch attributes
+                        uint32_t bpv = 0;
+                        for (const auto& a : shape.attribs) {
+                            if (a.data_type == 1) bpv += 1;      // direct byte
+                            else if (a.data_type == 2) bpv += 1;  // index8
+                            else if (a.data_type == 3) bpv += 2;  // index16
+                        }
+                        if (bpv == 0) continue;
+
+                        while (dp < dl_end) {
+                            uint8_t cmd = dl[dp];
+                            if (cmd == 0) { dp++; continue; } // NOP padding
+                            if (cmd < 0x80) { dp++; continue; } // skip non-draw
+
+                            uint8_t prim_type = cmd & 0xF8;
+                            if (dp + 3 > dl_end) break;
+                            uint16_t vert_count = j3d::read16(dl + dp + 1);
+                            dp += 3;
+
+                            if (vert_count == 0 || dp + vert_count * bpv > dl_end) break;
+
+                            // Collect triangle strip/fan vertices into a flat list
+                            struct Vtx { float x, y, z; uint8_t r, g, b; };
+                            std::vector<Vtx> verts(vert_count);
+
+                            for (uint16_t v = 0; v < vert_count; v++) {
+                                uint16_t pos_idx = 0;
+                                for (const auto& a : shape.attribs) {
+                                    uint16_t idx = 0;
+                                    if (a.data_type == 2) { idx = dl[dp]; dp += 1; }
+                                    else if (a.data_type == 3) { idx = j3d::read16(dl + dp); dp += 2; }
+                                    else if (a.data_type == 1) { dp += 1; continue; }
+                                    else continue;
+                                    if (a.attr == 9) pos_idx = idx; // GX_VA_POS
+                                }
+                                if (pos_idx < pos_count) {
+                                    verts[v].x = j3d::readf32(pos_data + pos_idx * 12 + 0);
+                                    verts[v].y = j3d::readf32(pos_data + pos_idx * 12 + 4);
+                                    verts[v].z = j3d::readf32(pos_data + pos_idx * 12 + 8);
+                                } else {
+                                    verts[v] = {0, 0, 0, 128, 128, 128};
+                                }
+                                int yi = (int)(verts[v].y * 0.1f);
+                                verts[v].r = (uint8_t)std::min(255, std::max(0, 80 + yi));
+                                verts[v].g = (uint8_t)std::min(255, std::max(0, 140 + yi));
+                                verts[v].b = (uint8_t)std::min(255, std::max(0, 60 + yi / 2));
+                            }
+
+                            // Convert strip/fan to triangles and draw
+                            std::vector<Vtx> tris;
+                            if (prim_type == 0x98) { // Triangle strip
+                                for (uint16_t v = 2; v < vert_count; v++) {
+                                    if (v & 1) { tris.push_back(verts[v-1]); tris.push_back(verts[v-2]); tris.push_back(verts[v]); }
+                                    else       { tris.push_back(verts[v-2]); tris.push_back(verts[v-1]); tris.push_back(verts[v]); }
+                                }
+                            } else if (prim_type == 0xA0) { // Triangle fan
+                                for (uint16_t v = 2; v < vert_count; v++) {
+                                    tris.push_back(verts[0]); tris.push_back(verts[v-1]); tris.push_back(verts[v]);
+                                }
+                            } else if (prim_type == 0x90) { // Triangles
+                                for (uint16_t v = 0; v + 2 < vert_count; v += 3) {
+                                    tris.push_back(verts[v]); tris.push_back(verts[v+1]); tris.push_back(verts[v+2]);
+                                }
+                            }
+
+                            if (!tris.empty()) {
+                                uint32_t tc = (uint32_t)tris.size();
+                                if (tc > 60000) tc = 60000;
+                                GXBegin(GX_TRIANGLES, 0, tc);
+                                for (uint32_t t = 0; t < tc; t++) {
+                                    GXPosition3f32(tris[t].x, tris[t].y, tris[t].z);
+                                    GXColor4u8(tris[t].r, tris[t].g, tris[t].b, 255);
+                                    GXSubmitVertex();
+                                }
+                                GXEnd();
+                            }
+                        }
+                    }
                 }
-                GXEnd();
             }
         }
 
