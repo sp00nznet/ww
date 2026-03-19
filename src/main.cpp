@@ -14,6 +14,7 @@
 #include "ww/gx/gx.h"
 #include "ww/audio/audio.h"
 #include "ww/input/input.h"
+#include "ww/j3d.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -878,6 +879,60 @@ int main(int argc, char** argv) {
                                 uint32_t cnt = (ch[4] << 24) | (ch[5] << 16) | (ch[6] << 8) | ch[7];
                                 uint32_t off = (ch[8] << 24) | (ch[9] << 16) | (ch[10] << 8) | ch[11];
                                 printf("[*]     Chunk '%s': %u entries at offset 0x%X\n", tag, cnt, off);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+
+        // ---- Parse BDL models from Room44.arc ----
+        // Re-parse Room44.arc to access BDL files (room_compressed still in scope)
+        if (!room_compressed.empty()) {
+            const uint8_t* room_raw = room_compressed.data();
+            uint32_t room_raw_size = (uint32_t)room_compressed.size();
+            if (gcrecomp::rarc_is_archive(room_raw, room_raw_size)) {
+                gcrecomp::RARCArchive room_arc;
+                if (gcrecomp::rarc_parse(room_raw, room_raw_size, room_arc)) {
+                    // Parse each BDL file
+                    const char* bdl_names[] = {"bdl/model.bdl", "bdl/model1.bdl", "bdl/model3.bdl", nullptr};
+                    for (const char** name = bdl_names; *name; name++) {
+                        const gcrecomp::RARCFile* f = room_arc.find_path(*name);
+                        if (f) {
+                            const uint8_t* bdl_data = room_arc.file_data(*f, room_raw, room_raw_size);
+                            if (bdl_data) {
+                                printf("[*] Parsing %s (%u bytes)...\n", *name, f->data_size);
+                                j3d::J3DModel model;
+                                if (j3d::j3d_parse(bdl_data, f->data_size, model)) {
+                                    j3d::j3d_print_summary(model);
+                                } else {
+                                    printf("[*]   J3D parse failed\n");
+                                }
+                            }
+                        }
+                    }
+
+                    // Also parse skybox models from Stage.arc
+                    uint32_t sbuf = g_mem.read32(RARC_BUF_PTR_ADDR);
+                    uint32_t ssz = g_mem.read32(RARC_BUF_SIZE_ADDR);
+                    if (sbuf >= 0x80000000 && ssz > 0) {
+                        uint8_t* sdata = g_mem.translate(sbuf);
+                        gcrecomp::RARCArchive sarc;
+                        if (gcrecomp::rarc_parse(sdata, ssz, sarc)) {
+                            const char* sky_names[] = {"bdl/vr_sky.bdl", "bdl/vr_uso_umi.bdl", nullptr};
+                            for (const char** name = sky_names; *name; name++) {
+                                const gcrecomp::RARCFile* f = sarc.find_path(*name);
+                                if (f) {
+                                    const uint8_t* bdl_data = sarc.file_data(*f, sdata, ssz);
+                                    if (bdl_data) {
+                                        printf("[*] Parsing %s (%u bytes)...\n", *name, f->data_size);
+                                        j3d::J3DModel model;
+                                        if (j3d::j3d_parse(bdl_data, f->data_size, model)) {
+                                            j3d::j3d_print_summary(model);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
