@@ -213,7 +213,7 @@ load/store operations with GQR-based dequantization.
 
 ### Runtime Status
 
-The game is **running with scene data loaded from disc and per-frame scene state management**:
+The game is **running with both stage and room archives loaded from disc**:
 
 - All 41 translation units compile with MSVC (C++20)
 - DOL loaded, all 100 static constructors complete
@@ -221,28 +221,52 @@ The game is **running with scene data loaded from disc and per-frame scene state
 - Main game loop running at ~60 FPS with full `fapGm_Execute` dispatch
 - **Root scene created and scene loading state machine complete** (0→1→2→3→-1)
 - **FST loaded from game ISO** (2391 files parsed)
-- **Stage.arc Yaz0 decompressed** (59KB compressed → 299KB decompressed)
-- **RARC archive parsed** — 9 files extracted (textures, stage data, skybox models)
+- **Stage.arc Yaz0 decompressed** (59KB → 299KB) — 9 files parsed
+- **Room44.arc loaded from disc** (714KB raw RARC) — 9 files parsed
+- **stage.dzs chunk table parsed** — 13 chunks (actors, environment, cameras, paths)
 - **DVD request queue processed per-frame** with Yaz0 decompression
 - **Framework creation queue pumped per-frame** (emulates background thread)
 - **Scene manager per-frame dispatch** — Phase 1 (state management, frame swap) active
 - Bump allocator replaces JKR heap system (mDoGph_Create skipped)
 - 14 hardware-dependent functions patched in recompiled source
-- VRetrace timing gate returns 0 naturally (no bypass needed)
-- GX camera matrix, draw-done sync, VI busy-waits all stubbed
 
-### Stage.arc Contents (sea_T — Title Screen)
+### Loaded Archives (sea_T — Great Sea)
 
+**Stage.arc** (59KB Yaz0 → 299KB decompressed):
 ```
 tex/cloudtx_01.bti   4,128 bytes   Cloud texture
 tex/cloudtx_02.bti   4,128 bytes   Cloud texture
 tex/cloudtx_03.bti   4,128 bytes   Cloud texture
-dzs/stage.dzs         4,608 bytes   Stage data/settings
+dzs/stage.dzs         4,608 bytes   Stage data (13 chunks)
 dat/event_list.dat  227,804 bytes   Event scripts
 bdl/vr_back_cloud.bdl 40,096 bytes  Skybox cloud model
 bdl/vr_kasumi_mae.bdl  3,808 bytes  Skybox haze model
 bdl/vr_sky.bdl         6,496 bytes  Skybox model
 bdl/vr_uso_umi.bdl     3,072 bytes  Sea surface model
+```
+
+**Room44.arc** (714KB raw RARC):
+```
+dzr/room.dzr          10,880 bytes  Room data/actors
+dzb/room.dzb         121,504 bytes  Room collision mesh
+dat/m128.amp          35,456 bytes  Lightmap
+dat/m128.bti          21,568 bytes  Lightmap texture
+dat/s128.bti           7,264 bytes  Shadow texture
+btk/model1.btk         2,784 bytes  Texture animation
+bdl/model.bdl        399,872 bytes  Main room model (390KB)
+bdl/model1.bdl       111,296 bytes  Secondary room model
+bdl/model3.bdl         3,360 bytes  Tertiary room model
+```
+
+**stage.dzs Chunk Table** (13 chunks):
+```
+STAG (1)    Stage settings          RTBL (50)   Room table
+EVNT (1)    Event data              MULT (2)    Spawn multipliers
+EnvR (50)   Environment registers   Colo (5)    Color settings
+Pale (33)   Palette entries         Virt (31)   Virtual light settings
+RPAT (4)    Room paths              RPPN (30)   Path points
+ACTR (2)    Actor placements        RCAM (1)    Camera
+RARO (1)    RARC override
 ```
 
 ### What Works
@@ -252,38 +276,34 @@ bdl/vr_uso_umi.bdl     3,072 bytes  Sea surface model
 | Static constructors (100/100) | Working |
 | Game framework (fapGm) | Working — full layer dispatch every frame |
 | Scene change requests | Working — state machine cycles correctly |
-| DVD/ISO file access | Working — FST parsed, Stage.arc loaded from disc |
+| DVD/ISO file access | Working — FST parsed, both archives loaded from disc |
 | Yaz0 decompression | Working — 59KB → 299KB decompressed correctly |
-| RARC archive parsing | Working — 9 files extracted from Stage.arc |
+| RARC archive parsing | Working — 18 files across 2 archives |
+| DZS stage data parsing | Working — 13 chunks, full chunk table decoded |
 | Per-frame DVD queue | Working — processes async requests synchronously |
 | Per-frame creation queue | Working — emulates background framework thread |
+| Scene state management | Working — Phase 1 per-frame dispatch active |
 | Memory allocation | Working — bump allocator replaces JKR heap |
 | Time Base (TB) register | Working — host QueryPerformanceCounter scaled to 40.5MHz |
 
 ### Current Focus
 
-The framework's **process tree is empty** — Wind Waker uses a deeply nested multi-threaded
-framework where process objects self-register with a "birth queue" through their constructors,
-then get moved to the main execution tree per-frame. This architecture depends on:
-1. A background thread that calls create functions and allocates process objects
-2. Process constructors that link into the birth queue (0x803BCEC8)
-3. Per-frame tree insertion from birth queue → process tree (0x803726A0)
+Scene data is fully loaded into RAM. The next step is **parsing BDL model data** to
+extract geometry for the D3D11 rendering pipeline. The main room model (model.bdl, 390KB)
+contains J3D binary model data with vertex positions, normals, texture coordinates,
+material definitions, and draw commands that will need to be translated from GX to D3D11.
 
-Our single-threaded model breaks this chain. The create function (func_80022CEC) crashes
-on JKR volume searches with bad pointers from the empty mount list, so it's stubbed.
-Even unstubbed, it only does profile registration — actual process allocation requires
-a second-level creation request through the framework.
-
-The decompressed scene data (Stage.arc) is in RAM and fully parsed. The current approach
-is to **bypass the framework** and drive scene progression directly from the main loop.
+The framework process tree remains empty (bypassed). Wind Waker's multi-threaded process
+system is too deeply integrated with JKR archive mounting and background thread creation
+to emulate directly. Scene progression is driven from the main loop instead.
 
 ### Next Steps
 
-- **Scene data processing**: Parse stage.dzs, load Room44.arc via DVD pipeline
-- **JKR archive mounting**: Create proper JKRMemArchive objects from RARC data
-- **GX rendering**: TEV stage → HLSL shader pipeline for actual pixel output
+- **BDL model parsing**: Extract geometry from J3D binary model format
+- **GX → D3D11 rendering**: Translate TEV material/shader pipeline to HLSL
+- **Collision mesh**: Parse room.dzb for room boundaries
+- **Room actors**: Parse room.dzr for object placements
 - **REL module loading**: Scene data may include relocatable code modules
-- **Long-term**: Consider decompilation-based approach for complex subsystems
 
 ## Standing on the Shoulders of Giants
 
