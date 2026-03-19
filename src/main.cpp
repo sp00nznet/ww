@@ -760,6 +760,133 @@ int main(int argc, char** argv) {
     }
     fflush(stdout);
 
+    // ---- Load Room44.arc from disc ----
+    // Bypass the framework process system and load room data directly.
+    // The scene data (Stage.arc) is already decompressed at buf1_addr.
+    // Now load the room archive using the same Yaz0+RARC pipeline.
+    if (is_disc_mounted()) {
+        // sea_T/Room44.arc: offset=0x51245A50, size=714816
+        const uint32_t ROOM44_ARC_OFFSET = 0x51245A50;
+        const uint32_t ROOM44_ARC_SIZE   = 714816;
+
+        printf("[*] Loading Room44.arc (%u bytes, %uKB) from ISO...\n",
+               ROOM44_ARC_SIZE, ROOM44_ARC_SIZE / 1024);
+
+        std::vector<uint8_t> room_compressed(ROOM44_ARC_SIZE);
+        size_t room_read = disc_read(ROOM44_ARC_OFFSET, room_compressed.data(), ROOM44_ARC_SIZE);
+        printf("[*]   Read %zu bytes from disc\n", room_read);
+
+        if (room_read == ROOM44_ARC_SIZE) {
+            if (gcrecomp::yaz0_is_compressed(room_compressed.data(), room_compressed.size())) {
+                uint32_t room_decomp_size = gcrecomp::yaz0_decompressed_size(
+                    room_compressed.data(), room_compressed.size());
+                printf("[*]   Yaz0 compressed: %u → %u bytes (%uKB)\n",
+                       ROOM44_ARC_SIZE, room_decomp_size, room_decomp_size / 1024);
+
+                // Allocate space in emulated RAM for decompressed room data
+                uint32_t room_align = (g_bump_alloc_ptr + 31) & ~31;
+                if (room_align + room_decomp_size < BUMP_ALLOC_END) {
+                    uint32_t room_buf_addr = room_align;
+                    g_bump_alloc_ptr = room_align + room_decomp_size;
+
+                    uint8_t* room_dst = g_mem.translate(room_buf_addr);
+                    size_t room_written = gcrecomp::yaz0_decompress(
+                        room_compressed.data(), room_compressed.size(),
+                        room_dst, room_decomp_size);
+
+                    if (room_written == room_decomp_size) {
+                        printf("[*]   Yaz0 decompressed %zu bytes → 0x%08X\n",
+                               room_written, room_buf_addr);
+
+                        if (gcrecomp::rarc_is_archive(room_dst, room_written)) {
+                            gcrecomp::RARCArchive room_archive;
+                            if (gcrecomp::rarc_parse(room_dst, room_written, room_archive)) {
+                                printf("[*]   Room44.arc RARC contents (%zu files):\n",
+                                       room_archive.files.size());
+                                for (const auto& f : room_archive.files) {
+                                    printf("[*]     %s (%u bytes)\n",
+                                           f.path.c_str(), f.data_size);
+                                }
+                            } else {
+                                printf("[*]   WARNING: Room44 RARC parse failed\n");
+                            }
+                        } else {
+                            printf("[*]   Header: %02X%02X%02X%02X (not RARC?)\n",
+                                   room_dst[0], room_dst[1], room_dst[2], room_dst[3]);
+                        }
+                    } else {
+                        printf("[*]   WARNING: Room44 Yaz0 decompression incomplete\n");
+                    }
+                } else {
+                    printf("[*]   WARNING: Not enough arena space for Room44 (%u bytes)\n",
+                           room_decomp_size);
+                }
+            } else {
+                // Not Yaz0 compressed — raw RARC archive
+                uint32_t room_size = (uint32_t)room_compressed.size();
+                uint32_t room_align = (g_bump_alloc_ptr + 31) & ~31;
+                if (room_align + room_size < BUMP_ALLOC_END) {
+                    uint32_t room_buf_addr = room_align;
+                    g_bump_alloc_ptr = room_align + room_size;
+
+                    uint8_t* room_dst = g_mem.translate(room_buf_addr);
+                    memcpy(room_dst, room_compressed.data(), room_size);
+                    printf("[*]   Copied %u bytes (uncompressed) → 0x%08X\n",
+                           room_size, room_buf_addr);
+
+                    if (gcrecomp::rarc_is_archive(room_dst, room_size)) {
+                        gcrecomp::RARCArchive room_archive;
+                        if (gcrecomp::rarc_parse(room_dst, room_size, room_archive)) {
+                            printf("[*]   Room44.arc RARC contents (%zu files):\n",
+                                   room_archive.files.size());
+                            for (const auto& f : room_archive.files) {
+                                printf("[*]     %s (%u bytes)\n",
+                                       f.path.c_str(), f.data_size);
+                            }
+                        } else {
+                            printf("[*]   WARNING: Room44 RARC parse failed\n");
+                        }
+                    } else {
+                        printf("[*]   Header: %02X%02X%02X%02X (not RARC?)\n",
+                               room_dst[0], room_dst[1], room_dst[2], room_dst[3]);
+                    }
+                }
+            }
+        }
+
+        // Also parse stage.dzs from the already-loaded Stage.arc
+        uint32_t stage_buf = g_mem.read32(RARC_BUF_PTR_ADDR);
+        uint32_t stage_size = g_mem.read32(RARC_BUF_SIZE_ADDR);
+        if (stage_buf >= 0x80000000 && stage_size > 0) {
+            uint8_t* stage_data = g_mem.translate(stage_buf);
+            gcrecomp::RARCArchive stage_archive;
+            if (gcrecomp::rarc_parse(stage_data, stage_size, stage_archive)) {
+                const gcrecomp::RARCFile* dzs = stage_archive.find_path("dzs/stage.dzs");
+                if (dzs) {
+                    const uint8_t* dzs_data = stage_archive.file_data(*dzs, stage_data, stage_size);
+                    if (dzs_data) {
+                        printf("[*] stage.dzs: %u bytes at %p\n", dzs->data_size, dzs_data);
+                        // DZS header: first 4 bytes = chunk count
+                        if (dzs->data_size >= 8) {
+                            uint32_t chunk_count = (dzs_data[0] << 24) | (dzs_data[1] << 16) |
+                                                   (dzs_data[2] << 8) | dzs_data[3];
+                            printf("[*]   DZS chunk count: %u\n", chunk_count);
+                            // Each chunk header: 4-byte tag + 4-byte count + 4-byte offset
+                            for (uint32_t i = 0; i < chunk_count && (4 + i * 12 + 12) <= dzs->data_size; i++) {
+                                const uint8_t* ch = dzs_data + 4 + i * 12;
+                                char tag[5] = {(char)ch[0], (char)ch[1], (char)ch[2], (char)ch[3], 0};
+                                uint32_t cnt = (ch[4] << 24) | (ch[5] << 16) | (ch[6] << 8) | ch[7];
+                                uint32_t off = (ch[8] << 24) | (ch[9] << 16) | (ch[10] << 8) | ch[11];
+                                printf("[*]     Chunk '%s': %u entries at offset 0x%X\n", tag, cnt, off);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fflush(stdout);
+
     // ---- Diagnostics: check framework state ----
     {
         uint32_t r13_val = g_ctx.r[13];  // 0x803FE0E0
