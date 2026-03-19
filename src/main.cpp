@@ -20,6 +20,7 @@
 #include <cstring>
 #include <thread>
 #include <atomic>
+#include <cmath>
 
 // Auto-generated function registration (from recompiler output)
 extern void register_recompiled_functions(ww::FuncTable& table);
@@ -40,6 +41,13 @@ static const uint32_t WINDOW_WIDTH  = 1280;
 static const uint32_t WINDOW_HEIGHT = 720;
 
 static std::atomic<bool> g_game_running{false};
+
+// Parsed BDL model for rendering (room geometry)
+static j3d::J3DModel g_room_model;
+static const uint8_t* g_room_bdl_data = nullptr;
+static uint32_t g_room_bdl_size = 0;
+static bool g_room_model_loaded = false;
+static float g_camera_angle = 0.0f;
 
 // Forward declarations for recompiled functions
 extern void func_8030CFB0(PPCContext* ctx, Memory* mem);  // Small init helper
@@ -895,7 +903,7 @@ int main(int argc, char** argv) {
             if (gcrecomp::rarc_is_archive(room_raw, room_raw_size)) {
                 gcrecomp::RARCArchive room_arc;
                 if (gcrecomp::rarc_parse(room_raw, room_raw_size, room_arc)) {
-                    // Parse each BDL file
+                    // Parse each BDL file — keep the main room model for rendering
                     const char* bdl_names[] = {"bdl/model.bdl", "bdl/model1.bdl", "bdl/model3.bdl", nullptr};
                     for (const char** name = bdl_names; *name; name++) {
                         const gcrecomp::RARCFile* f = room_arc.find_path(*name);
@@ -906,6 +914,14 @@ int main(int argc, char** argv) {
                                 j3d::J3DModel model;
                                 if (j3d::j3d_parse(bdl_data, f->data_size, model)) {
                                     j3d::j3d_print_summary(model);
+                                    // Keep main room model for rendering
+                                    if (strcmp(*name, "bdl/model.bdl") == 0) {
+                                        g_room_model = std::move(model);
+                                        g_room_bdl_data = bdl_data;
+                                        g_room_bdl_size = f->data_size;
+                                        g_room_model_loaded = true;
+                                        printf("[*]   Stored for rendering.\n");
+                                    }
                                 } else {
                                     printf("[*]   J3D parse failed\n");
                                 }
@@ -1114,6 +1130,104 @@ int main(int argc, char** argv) {
 
         input::input_update();
         audio::audio_update();
+
+        // ---- Render room geometry ----
+        if (g_room_model_loaded && !g_room_model.vertex_arrays.empty()) {
+            using namespace gcrecomp::gx;
+
+            // Find position vertex array
+            const j3d::VertexArray* pos_array = nullptr;
+            for (const auto& va : g_room_model.vertex_arrays) {
+                if (va.attr == j3d::GX_VA_POS) { pos_array = &va; break; }
+            }
+
+            if (pos_array && pos_array->count > 0 && pos_array->comp_type == 4 /*f32*/) {
+                // Rotate camera slowly
+                g_camera_angle += 0.005f;
+                float ca = cosf(g_camera_angle), sa = sinf(g_camera_angle);
+                float dist = 8000.0f;  // Camera distance
+                float eye_x = sa * dist, eye_z = ca * dist, eye_y = 3000.0f;
+
+                // Simple look-at model-view matrix (row-major 3x4)
+                // Forward = normalize(-eye)
+                float fx = -eye_x, fy = -eye_y, fz = -eye_z;
+                float fl = sqrtf(fx*fx + fy*fy + fz*fz);
+                fx /= fl; fy /= fl; fz /= fl;
+                // Right = normalize(cross(up, forward))
+                float rx = fz, ry = 0.0f, rz = -fx;  // up=(0,1,0) simplified
+                float rl = sqrtf(rx*rx + rz*rz);
+                if (rl > 0.001f) { rx /= rl; rz /= rl; }
+                // Up = cross(forward, right)
+                float ux = fy*rz - fz*ry, uy = fz*rx - fx*rz, uz = fx*ry - fy*rx;
+
+                float mv[3][4] = {
+                    { rx, ry, rz, -(rx*eye_x + ry*eye_y + rz*eye_z) },
+                    { ux, uy, uz, -(ux*eye_x + uy*eye_y + uz*eye_z) },
+                    { fx, fy, fz, -(fx*eye_x + fy*eye_y + fz*eye_z) },
+                };
+                GXLoadPosMtxImm(mv, 0);
+                GXSetCurrentMtx(0);
+
+                // Perspective projection
+                float aspect = 1280.0f / 720.0f;
+                float fovy = 60.0f * 3.14159f / 180.0f;
+                float near_z = 100.0f, far_z = 50000.0f;
+                float t = tanf(fovy * 0.5f);
+                float proj[4][4] = {};
+                proj[0][0] = 1.0f / (aspect * t);
+                proj[1][1] = 1.0f / t;
+                proj[2][2] = -(far_z + near_z) / (far_z - near_z);
+                proj[2][3] = -2.0f * far_z * near_z / (far_z - near_z);
+                proj[3][2] = -1.0f;
+                GXSetProjection(proj, 0); // 0 = perspective
+
+                GXSetViewport(0, 0, 1280, 720, 0.0f, 1.0f);
+
+                // Simple TEV: output = vertex color (white) with no texture
+                GXSetNumTevStages(1);
+                GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_RASC);
+                GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+                GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
+                GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+                GXSetTevOrder(GX_TEVSTAGE0, 0xFF, 0xFF, 0); // no texcoord, no texture, color0
+
+                GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, 0);
+                GXSetZMode(true, GX_LEQUAL, true);
+                GXSetCullMode(GX_CULL_NONE);
+
+                // Vertex format: direct position + direct color
+                GXClearVtxDesc();
+                GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+                GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+
+                // Draw position vertices as triangles with height-based coloring.
+                // BDL vertex data is big-endian — byte-swap each float.
+                // Positions are indexed (not in triangle order) but we draw
+                // sequential triples as triangles for a quick visualization.
+                uint32_t vert_count = pos_array->count;
+                uint32_t tri_verts = (vert_count / 3) * 3;
+                if (tri_verts > 15000) tri_verts = 15000; // cap for performance
+
+                GXBegin(GX_TRIANGLES, 0, tri_verts);
+                const uint8_t* vraw = pos_array->data;
+                for (uint32_t i = 0; i < tri_verts; i++) {
+                    // Read big-endian floats
+                    float x = j3d::readf32(vraw + i * 12 + 0);
+                    float y = j3d::readf32(vraw + i * 12 + 4);
+                    float z = j3d::readf32(vraw + i * 12 + 8);
+                    GXPosition3f32(x, y, z);
+                    // Height-based coloring (green terrain)
+                    int yi = (int)(y * 0.1f);
+                    uint8_t r = (uint8_t)std::min(255, std::max(0, 80 + yi));
+                    uint8_t g = (uint8_t)std::min(255, std::max(0, 140 + yi));
+                    uint8_t b = (uint8_t)std::min(255, std::max(0, 60 + yi / 2));
+                    GXColor4u8(r, g, b, 255);
+                    GXSubmitVertex();
+                }
+                GXEnd();
+            }
+        }
+
         gx::GXPresent();
         Sleep(16);  // ~60 FPS cap
     }

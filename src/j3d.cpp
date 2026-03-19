@@ -37,20 +37,20 @@ static uint32_t compute_stride(uint32_t attr, uint32_t comp_type, uint32_t comp_
 
 // Parse VTX1 section — vertex arrays
 static bool parse_vtx1(const uint8_t* section, uint32_t section_size, J3DModel& model) {
-    if (section_size < 0x40) return false;
+    if (section_size < 0x44) return false;
 
-    // VTX1 header:
-    //   +0x08: array format offset (relative to section start)
-    //   +0x0C: array data offsets table (13 entries, one per attr type)
+    // VTX1 header layout:
+    //   +0x00: 'VTX1' tag
+    //   +0x04: section size
+    //   +0x08: array format table offset (relative to section start)
+    //   +0x0C: 13 inline uint32 data offsets (POS, NRM, NBT, CLR0, CLR1, TEX0..TEX7)
+    //          Each offset is relative to section start. 0 = array not present.
     uint32_t fmt_offset = read32(section + 0x08);
-    uint32_t data_offsets_offset = read32(section + 0x0C);
 
-    // Read array data offsets (13 entries for position through texcoord7)
+    // Data offsets are inline at +0x0C: [POS, NRM, NBT, CLR0, CLR1, TEX0..TEX7]
     uint32_t data_offsets[13] = {};
-    if (data_offsets_offset + 13 * 4 <= section_size) {
-        for (int i = 0; i < 13; i++) {
-            data_offsets[i] = read32(section + data_offsets_offset + i * 4);
-        }
+    for (int i = 0; i < 13; i++) {
+        data_offsets[i] = read32(section + 0x0C + i * 4);
     }
 
     // Parse vertex attribute format entries
@@ -69,14 +69,13 @@ static bool parse_vtx1(const uint8_t* section, uint32_t section_size, J3DModel& 
         uint8_t  frac_bits  = section[fmt_pos + 12];
 
         // Map attr to data offset index
-        // Attrs: POS=9, NRM=10, CLR0=11, CLR1=12, TEX0=13..TEX7=20
-        // Data offsets array: [0]=pos, [1]=nrm, [2]=clr0, [3]=clr1, [4-11]=tex0-7
+        // Inline offsets: [0]=POS, [1]=NRM, [2]=NBT, [3]=CLR0, [4]=CLR1, [5-12]=TEX0-7
         int data_idx = -1;
         if (attr == GX_VA_POS)  data_idx = 0;
         else if (attr == GX_VA_NRM)  data_idx = 1;
-        else if (attr == GX_VA_CLR0) data_idx = 2;
-        else if (attr == GX_VA_CLR1) data_idx = 3;
-        else if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) data_idx = 4 + (attr - GX_VA_TEX0);
+        else if (attr == GX_VA_CLR0) data_idx = 3;
+        else if (attr == GX_VA_CLR1) data_idx = 4;
+        else if (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7) data_idx = 5 + (attr - GX_VA_TEX0);
 
         if (data_idx >= 0 && data_idx < 13 && data_offsets[data_idx] != 0) {
             VertexArray va = {};
