@@ -213,7 +213,7 @@ load/store operations with GQR-based dequantization.
 
 ### Runtime Status
 
-The game is **running with Yaz0 decompression and RARC archive parsing from disc**:
+The game is **running with scene data loaded from disc and per-frame scene state management**:
 
 - All 41 translation units compile with MSVC (C++20)
 - DOL loaded, all 100 static constructors complete
@@ -225,6 +225,7 @@ The game is **running with Yaz0 decompression and RARC archive parsing from disc
 - **RARC archive parsed** — 9 files extracted (textures, stage data, skybox models)
 - **DVD request queue processed per-frame** with Yaz0 decompression
 - **Framework creation queue pumped per-frame** (emulates background thread)
+- **Scene manager per-frame dispatch** — Phase 1 (state management, frame swap) active
 - Bump allocator replaces JKR heap system (mDoGph_Create skipped)
 - 14 hardware-dependent functions patched in recompiled source
 - VRetrace timing gate returns 0 naturally (no bypass needed)
@@ -259,24 +260,30 @@ bdl/vr_uso_umi.bdl     3,072 bytes  Sea surface model
 | Memory allocation | Working — bump allocator replaces JKR heap |
 | Time Base (TB) register | Working — host QueryPerformanceCounter scaled to 40.5MHz |
 
-### Current Blocker
+### Current Focus
 
-The framework's **process tree is empty** — the scene process is created but not yet
-inserted into the execution tree. Wind Waker uses a multi-threaded framework where a
-background thread creates processes and moves them to a "ready queue" for the main thread
-to pick up. Our per-frame creation pump calls the create function successfully, but the
-"move to ready queue" step (normally done by the background thread) isn't emulated yet.
+The framework's **process tree is empty** — Wind Waker uses a deeply nested multi-threaded
+framework where process objects self-register with a "birth queue" through their constructors,
+then get moved to the main execution tree per-frame. This architecture depends on:
+1. A background thread that calls create functions and allocates process objects
+2. Process constructors that link into the birth queue (0x803BCEC8)
+3. Per-frame tree insertion from birth queue → process tree (0x803726A0)
 
-The decompressed archive data is in RAM and accessible. The next step is wiring up the
-framework's process tree so `fapGm_Execute` has processes to dispatch.
+Our single-threaded model breaks this chain. The create function (func_80022CEC) crashes
+on JKR volume searches with bad pointers from the empty mount list, so it's stubbed.
+Even unstubbed, it only does profile registration — actual process allocation requires
+a second-level creation request through the framework.
+
+The decompressed scene data (Stage.arc) is in RAM and fully parsed. The current approach
+is to **bypass the framework** and drive scene progression directly from the main loop.
 
 ### Next Steps
 
-- **Process tree insertion**: Move created scene process into the framework tree
+- **Scene data processing**: Parse stage.dzs, load Room44.arc via DVD pipeline
 - **JKR archive mounting**: Create proper JKRMemArchive objects from RARC data
-- **Room archive loading**: Room44.arc (714KB) needs same Yaz0+RARC pipeline
 - **GX rendering**: TEV stage → HLSL shader pipeline for actual pixel output
 - **REL module loading**: Scene data may include relocatable code modules
+- **Long-term**: Consider decompilation-based approach for complex subsystems
 
 ## Standing on the Shoulders of Giants
 

@@ -66,6 +66,10 @@ extern void func_80007A70(PPCContext* ctx, Memory* mem);  // mDoRst_Create (rese
 extern void func_80023218(PPCContext* ctx, Memory* mem);  // fapGm_Create (framework create)
 extern void func_80022DF8(PPCContext* ctx, Memory* mem);  // framework post-create init
 
+// Scene manager per-frame dispatch sub-functions
+extern void func_80007EE4(PPCContext* ctx, Memory* mem);  // Frame buffer swap
+extern void func_803268D8(PPCContext* ctx, Memory* mem);  // Matrix identity setup
+
 
 // Per-frame functions from main01's loop:
 extern void func_800078C0(PPCContext* ctx, Memory* mem);  // mDoRst_Execute (reset check)
@@ -388,12 +392,13 @@ int main(int argc, char** argv) {
     }
 
     // ---- Override problematic functions ----
-    // Replace func_80022CEC — the original hits assert cascades and corrupts
-    // the PPC stack when called with our fake JKR objects. Just set the flag.
+    // Replace func_80022CEC — the original JKR volume search (func_802B6AB8)
+    // dereferences uninitialized pointers from the empty mount list, causing
+    // bad memory accesses. We stub it to return success and set the scene flag.
     g_func_table.register_func(0x80022CEC, [](PPCContext* ctx, Memory* mem) {
         if (mem->read32(ctx->r[13] - 30492) == 0) {
             mem->write32(ctx->r[13] - 30492, 1);
-            fprintf(stderr, "[SCN] Scene process creation (simplified)\n");
+            fprintf(stderr, "[SCN] Scene process creation (stub)\n");
         }
         ctx->r[3] = 1;
     });
@@ -403,10 +408,42 @@ int main(int argc, char** argv) {
     // Needs timing globals at r13(-26600) not yet initialized. No-op for now.
     g_func_table.register_func(0x802558CC, [](PPCContext* ctx, Memory* mem) {});
     // func_8000AF2C (mDoGph_gInf_c execute) — the scene manager's per-frame
-    // dispatch. After calling the vtable method, it does extensive camera/rendering
-    // setup that accesses many uninitialized globals, causing tight loops on bad
-    // memory. Override as no-op until rendering subsystem is initialized.
-    g_func_table.register_func(0x8000AF2C, [](PPCContext* ctx, Memory* mem) {});
+    // dispatch. Phase 1 does scene state management (copies, vtable call, frame
+    // swap). Phase 2 does camera/rendering setup that hangs without GX init.
+    // We replace with Phase 1 only.
+    g_func_table.register_func(0x8000AF2C, [](PPCContext* ctx, Memory* mem) {
+        uint32_t r13 = ctx->r[13];
+        uint32_t scene_mgr = mem->read32(r13 - 27984);
+        if (scene_mgr == 0 || scene_mgr < 0x80000000) return;
+
+        // Copy frame counter to scene manager
+        uint32_t frame_val = mem->read32(r13 - 30792);
+        mem->write32(scene_mgr + 4, frame_val);
+
+        // Copy scene globals (r13-32736) to scene manager (+12..+15)
+        uint32_t scene_info = mem->read32(r13 - 32736);
+        mem->write8(scene_mgr + 12, (scene_info >> 24) & 0xFF);
+        mem->write8(scene_mgr + 13, (scene_info >> 16) & 0xFF);
+        mem->write8(scene_mgr + 14, (scene_info >> 8) & 0xFF);
+        mem->write8(scene_mgr + 15, scene_info & 0xFF);
+
+        // Call scene manager vtable[2] (execute — currently no-op'd)
+        uint32_t vtable_ptr = mem->read32(scene_mgr);
+        uint32_t exec_fn = mem->read32(vtable_ptr + 8);
+        if (exec_fn != 0) {
+            ctx->r[3] = scene_mgr;
+            g_func_table.call(exec_fn, ctx, mem);
+        }
+
+        // Copy pending scene state to current (r13-32576 → r13-32736)
+        for (int i = 0; i < 4; i++) {
+            uint8_t b = mem->read8(r13 - 32576 + i);
+            mem->write8(r13 - 32736 + i, b);
+        }
+
+        // Frame buffer swap (func_80007EE4)
+        func_80007EE4(ctx, mem);
+    });
     // Frame timing gate: always return "process frame"
     g_func_table.register_func(0x8003EBD4, frame_gate_replacement);
     // DVD read from disc image (for indirect calls)
