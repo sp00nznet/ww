@@ -213,21 +213,21 @@ load/store operations with GQR-based dequantization.
 
 ### Runtime Status
 
-The game is **running with both stage and room archives loaded from disc**:
+The game is **rendering textured 3D geometry from actual game data at 60fps**:
 
 - All 41 translation units compile with MSVC (C++20)
 - DOL loaded, all 100 static constructors complete
 - Game framework (`fapGm_Create`) initialized successfully
 - Main game loop running at ~60 FPS with full `fapGm_Execute` dispatch
-- **Root scene created and scene loading state machine complete** (0→1→2→3→-1)
-- **FST loaded from game ISO** (2391 files parsed)
-- **Stage.arc Yaz0 decompressed** (59KB → 299KB) — 9 files parsed
-- **Room44.arc loaded from disc** (714KB raw RARC) — 9 files parsed
-- **stage.dzs chunk table parsed** — 13 chunks (actors, environment, cameras, paths)
-- **DVD request queue processed per-frame** with Yaz0 decompression
-- **Framework creation queue pumped per-frame** (emulates background thread)
-- **Scene manager per-frame dispatch** — Phase 1 (state management, frame swap) active
-- Bump allocator replaces JKR heap system (mDoGph_Create skipped)
+- **J3D/BDL model parser** — extracts geometry, textures, and materials from Nintendo's binary model format
+- **Indexed triangle rendering** — SHP1 display lists parsed, triangle strips/fans converted, vertex indices resolved
+- **CMPR texture decoding** — 17 textures decoded (DXT1 variant) and bound via GX pipeline
+- **Per-batch material binding** — INF1 scene graph maps shapes to materials to textures
+- **Multi-model scene** — island terrain (5,946 verts, 8 batches) + ocean water (1,194 verts, 8 batches)
+- **TEV shader pipeline** — texture * vertex color modulation, compiled and cached per-state
+- **Full D3D11 draw path** — vertex buffer upload, pixel shader, blending, depth test, present
+- **Orbiting camera** — perspective projection with automatic rotation around the island
+- Stage.arc Yaz0 decompressed (59KB → 299KB), Room44.arc loaded (714KB), stage.dzs parsed
 - 14 hardware-dependent functions patched in recompiled source
 
 ### Loaded Archives (sea_T — Great Sea)
@@ -275,35 +275,39 @@ RARO (1)    RARC override
 |--------|--------|
 | Static constructors (100/100) | Working |
 | Game framework (fapGm) | Working — full layer dispatch every frame |
-| Scene change requests | Working — state machine cycles correctly |
 | DVD/ISO file access | Working — FST parsed, both archives loaded from disc |
 | Yaz0 decompression | Working — 59KB → 299KB decompressed correctly |
 | RARC archive parsing | Working — 18 files across 2 archives |
+| J3D/BDL model parsing | Working — VTX1, SHP1, INF1, TEX1 sections extracted |
+| Indexed geometry rendering | Working — display list parsing, strip/fan→triangle conversion |
+| CMPR texture decoding | Working — 17 textures decoded and bound to GX pipeline |
+| Per-batch materials | Working — INF1 scene graph maps shapes to textures |
+| TEV shader generation | Working — HLSL shaders compiled and cached per-state |
+| D3D11 draw pipeline | Working — vertex buffers, pixel shaders, blending, depth |
+| Multi-model scene | Working — terrain (opaque) + water (translucent alpha blend) |
 | DZS stage data parsing | Working — 13 chunks, full chunk table decoded |
-| Per-frame DVD queue | Working — processes async requests synchronously |
-| Per-frame creation queue | Working — emulates background framework thread |
-| Scene state management | Working — Phase 1 per-frame dispatch active |
 | Memory allocation | Working — bump allocator replaces JKR heap |
 | Time Base (TB) register | Working — host QueryPerformanceCounter scaled to 40.5MHz |
 
 ### Current Focus
 
-Scene data is fully loaded into RAM. The next step is **parsing BDL model data** to
-extract geometry for the D3D11 rendering pipeline. The main room model (model.bdl, 390KB)
-contains J3D binary model data with vertex positions, normals, texture coordinates,
-material definitions, and draw commands that will need to be translated from GX to D3D11.
+The rendering pipeline is **end-to-end functional**: ISO → Yaz0 → RARC → BDL → J3D parse
+→ indexed display lists → GX vertex submit → TEV shader → D3D11 draw → pixels at 60fps.
+Both the island terrain and ocean water models render with decoded CMPR/I4 textures and
+per-batch material assignment.
 
 The framework process tree remains empty (bypassed). Wind Waker's multi-threaded process
 system is too deeply integrated with JKR archive mounting and background thread creation
-to emulate directly. Scene progression is driven from the main loop instead.
+to emulate directly. Scene rendering is driven from the main loop instead.
 
 ### Next Steps
 
-- **BDL model parsing**: Extract geometry from J3D binary model format
-- **GX → D3D11 rendering**: Translate TEV material/shader pipeline to HLSL
+- **MAT3 material parsing**: Full TEV stage configuration from materials (multi-texture, lighting)
+- **Proper normals**: Use VTX1 normal data for basic directional lighting
+- **Skybox rendering**: Render vr_sky.bdl and vr_uso_umi.bdl behind the island
 - **Collision mesh**: Parse room.dzb for room boundaries
-- **Room actors**: Parse room.dzr for object placements
-- **REL module loading**: Scene data may include relocatable code modules
+- **Room actors**: Parse room.dzr for object placements (ACTR data)
+- **Multiple rooms**: Load and render adjacent sea grid rooms
 
 ## Standing on the Shoulders of Giants
 
