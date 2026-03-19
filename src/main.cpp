@@ -278,19 +278,9 @@ static bool load_dol_into_memory(const char* path, Memory& mem) {
 
 static void print_banner() {
     printf("\n");
-    printf("  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
-    printf("      _____ _          __      ___           _\n");
-    printf("     |_   _| |_  ___  \\ \\    / (_)_ _  __| |\n");
-    printf("       | | | ' \\/ -_)  \\ \\/\\/ /| | ' \\/ _` |\n");
-    printf("       |_| |_||_\\___|  _\\_/\\_/ |_|_||_\\__,_|\n");
-    printf("         \\ \\    / /_ _| |_____ _ _\n");
-    printf("          \\ \\/\\/ / _` | / / -_) '_|\n");
-    printf("           \\_/\\_/\\__,_|_\\_\\___|_|\n");
-    printf("\n");
-    printf("       Static Recompilation - Native Windows 11\n");
-    printf("       GameCube PowerPC 750 (Gekko) -> x86-64\n");
-    printf("       No emulator. Just the wind at your back.\n");
-    printf("  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
+    printf("  The Wind Waker - Static Recompilation\n");
+    printf("  GameCube PowerPC 750 (Gekko) -> x86-64\n");
+    printf("  Native Windows 11 / D3D11\n");
     printf("\n");
 }
 
@@ -599,56 +589,87 @@ int main(int argc, char** argv) {
 
     // ---- Override problematic functions ----
     // Replace func_80022CEC (dScnPly_c::create) with a C implementation that
-    // calls the framework registration functions directly. The recompiled version
-    // hangs due to assertion loops and JKR mount list issues even with patches.
-    // This runs the same descriptor lifecycle: create → process → remove.
-    extern void func_802406B8(PPCContext* ctx, Memory* mem);
-    extern void func_802405BC(PPCContext* ctx, Memory* mem);
-    extern void func_8024019C(PPCContext* ctx, Memory* mem);
-    extern void func_80240098(PPCContext* ctx, Memory* mem);
+    // allocates a REAL process object for the scene process (profile 0x0015).
+    // The original hangs due to JKR mount list issues. Our replacement allocates
+    // the process, initializes its header fields (using Dolphin reference data),
+    // and returns the pointer so func_80018430 stores it correctly.
+    //
+    // Process object layout (from Dolphin capture of profile 0x0015):
+    //   +0x00: 0x09130001  magic/state flags
+    //   +0x04: process_id  unique sequential ID
+    //   +0x08: profile<<16 = 0x00150000
+    //   +0x0C: 0x02020015  flags | profile
+    //   +0x10: desc_ptr    profile descriptor at 0x80391B88
+    //   +0x18: list node   {prev, list_anchor, next, proc_base}
+    //   +0x24: self_ptr    points to own address
+    //   +0x28: 0x01000000  flags
+    //   +0x40: self_ptr
+    //   +0x58: self_ptr
+    //   +0x74: self_ptr
+    //   +0x90: 0x8003FD40  dispatch function
+    //   +0xB4: 0x09130003  sub-state
+    //   +0xD0: self_ptr
+    //   +0xD4: 0x01000000  flags
+    //   +0xD8: 0x80391B74  sub-descriptor
     g_func_table.register_func(0x80022CEC, [](PPCContext* ctx, Memory* mem) {
-        // Save callee-saved registers
-        uint32_t save_r30 = ctx->r[30], save_r31 = ctx->r[31];
-        uint32_t old_sp = ctx->r[1];
+        static uint32_t next_proc_id = 0xD4;  // Scene process gets ID 0xD4
 
-        // Allocate PPC stack frame (64 bytes, matching original)
-        ctx->r[1] -= 64;
-        mem->write32(ctx->r[1], old_sp); // back chain
+        // Allocate 0xF8 bytes (profile 0x0015 object size) from bump allocator
+        uint32_t size = 0xF8;
+        uint32_t aligned = (g_bump_alloc_ptr + 31) & ~31;
+        if (aligned + size > BUMP_ALLOC_END) {
+            fprintf(stderr, "[SCN] func_80022CEC: allocation failed!\n");
+            ctx->r[3] = 0;
+            return;
+        }
+        uint32_t proc_addr = aligned;
+        g_bump_alloc_ptr = aligned + size;
 
-        // Init process globals (safe — just clears SDA values)
-        func_802406B8(ctx, mem);
+        // Zero-fill
+        memset(mem->translate(proc_addr), 0, size);
 
-        // Create layer descriptor at sp+8, register with framework
-        ctx->r[3] = ctx->r[1] + 8;
-        ctx->r[4] = 0x8033BB59; // "f_pc_profile_lst"
-        func_802405BC(ctx, mem);
+        // Initialize process header
+        mem->write32(proc_addr + 0x00, 0x09130001);  // magic
+        mem->write32(proc_addr + 0x04, next_proc_id++);  // process ID
+        mem->write32(proc_addr + 0x08, 0x00150000);  // profile 0x0015
+        mem->write32(proc_addr + 0x0C, 0x02020015);  // flags | profile
+        mem->write32(proc_addr + 0x10, 0x80391B88);  // profile descriptor
 
-        ctx->r[3] = ctx->r[1] + 8;
-        func_8024019C(ctx, mem);
+        // Self-referential pointers (process points to itself in several fields)
+        mem->write32(proc_addr + 0x24, proc_addr);
+        mem->write32(proc_addr + 0x28, 0x01000000);
+        mem->write32(proc_addr + 0x40, proc_addr);
+        mem->write32(proc_addr + 0x44, 0x01000000);
+        mem->write32(proc_addr + 0x48, 0x00000001);
+        mem->write32(proc_addr + 0x58, proc_addr);
+        mem->write32(proc_addr + 0x74, proc_addr);
+
+        // Dispatch function and state fields
+        mem->write32(proc_addr + 0x90, 0x8003FD40);
+        mem->write32(proc_addr + 0x98, 0xFFFFFFFD);
+        mem->write32(proc_addr + 0x9C, 0x0001FFFD);
+        mem->write32(proc_addr + 0xA0, 0xFFFFFFFD);
+        mem->write32(proc_addr + 0xA4, 0x0001FFFD);
+        mem->write32(proc_addr + 0xA8, 0x803726E8);  // function table
+        mem->write32(proc_addr + 0xB4, 0x09130003);
+        mem->write32(proc_addr + 0xB8, 0x80372178);  // vtable dispatch
+        mem->write32(proc_addr + 0xBC, 0x00000002);
+        mem->write32(proc_addr + 0xC0, 0x09130004);
+        mem->write32(proc_addr + 0xC8, 0x803B9E98);
+        mem->write32(proc_addr + 0xD0, proc_addr);
+        mem->write32(proc_addr + 0xD4, 0x01000000);
+        mem->write32(proc_addr + 0xD8, 0x80391B74);  // sub-descriptor
+        mem->write32(proc_addr + 0xFC, 0x000002D4);
 
         // Set scene created flag
         mem->write32(ctx->r[13] - 30492, 1);
 
-        // Set descriptor vtable to process vtable
-        mem->write32(ctx->r[1] + 20, 0x80395070);
+        // Return the process pointer — func_80018430 stores this at item+28
+        ctx->r[3] = proc_addr;
 
-        // Process and remove the descriptor
-        ctx->r[3] = ctx->r[1] + 8;
-        ctx->r[4] = 0;
-        func_80240098(ctx, mem);
-
-        // Restore stack and registers
-        ctx->r[1] = old_sp;
-        ctx->r[30] = save_r30;
-        ctx->r[31] = save_r31;
-        ctx->r[3] = 1; // success
-
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            fprintf(stderr, "[SCN] func_80022CEC: framework registration complete\n");
-            fflush(stderr);
-        }
+        fprintf(stderr, "[SCN] func_80022CEC: allocated scene process at 0x%08X (id=%u)\n",
+                proc_addr, next_proc_id - 1);
+        fflush(stderr);
     });
     // PPCHalt (0x8030150C): infinite spin loop → return immediately
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
@@ -845,6 +866,172 @@ int main(int argc, char** argv) {
             uint32_t mount_list = g_mem.read32(0x803ED77C);
             printf("[*]   JKR mount list @0x803ED77C = 0x%08X\n", mount_list);
         }
+    }
+    fflush(stdout);
+
+    // ---- Populate process tree from Dolphin reference data ----
+    // The framework's process tree uses sublayer priority lists, not the flat
+    // tree at 0x803726A0. Processes live inside sublayers, which are part of
+    // the root layer at 0x80372690. The creation chain (func_80022CEC) can't
+    // create processes due to JKR dependencies, so we manually construct the
+    // essential process objects using field values captured from Dolphin.
+    //
+    // Hierarchy (from Dolphin capture during gameplay):
+    //   Root layer (0x80372690) → sublayer list at +0x4C (0x803726DC)
+    //     └ Sublayer 0 (0x803BCE20, DOL static) → listA at +0x38
+    //         └ Root layer process (profile 0x0007, 0x1D0 bytes)
+    //             └ Contains embedded sublayer 1 at process+0xBC
+    //                 └ Scene process (profile 0x0015, 0xF8 bytes) in listA
+    //
+    // List node structure (embedded at process+0x18 for listA):
+    //   +0x00: prev_node (NULL for head)
+    //   +0x04: list_anchor (sublayer + list_offset)
+    //   +0x08: next_node (NULL for tail)
+    //   +0x0C: process_base_addr
+    printf("[*] Populating process tree...\n");
+    {
+        // --- Helper: insert a process into a sublayer's listA (+0x38) ---
+        auto insert_listA = [](Memory* mem, uint32_t sublayer, uint32_t proc_addr) {
+            uint32_t list_anchor = sublayer + 0x38;
+            uint32_t node_addr = proc_addr + 0x18;  // listA node at +0x18
+            // Set up node: {prev=0, list_anchor, next=0, proc_base}
+            mem->write32(node_addr + 0, 0);           // prev = NULL (head)
+            mem->write32(node_addr + 4, list_anchor);  // anchor
+            mem->write32(node_addr + 8, 0);           // next = NULL (tail)
+            mem->write32(node_addr + 0xC, proc_addr); // back-pointer to process
+            // Update sublayer list: head, tail, count
+            uint32_t old_head = mem->read32(list_anchor);
+            if (old_head == 0) {
+                mem->write32(list_anchor, node_addr);      // head
+                mem->write32(list_anchor + 4, node_addr);  // tail
+                mem->write32(list_anchor + 8, 1);          // count
+            } else {
+                // Append: new node becomes new tail
+                uint32_t old_tail = mem->read32(list_anchor + 4);
+                mem->write32(old_tail + 8, node_addr);     // old_tail.next = new
+                mem->write32(node_addr + 0, old_tail);     // new.prev = old_tail
+                mem->write32(list_anchor + 4, node_addr);  // list.tail = new
+                uint32_t count = mem->read32(list_anchor + 8);
+                mem->write32(list_anchor + 8, count + 1);
+            }
+        };
+
+        // --- 1. Create root layer process (profile 0x0007, size 0x1D0) ---
+        const uint32_t ROOT_PROC_SIZE = 0x1D0;
+        uint32_t rp_aligned = (g_bump_alloc_ptr + 31) & ~31;
+        uint32_t root_proc = rp_aligned;
+        g_bump_alloc_ptr = rp_aligned + ROOT_PROC_SIZE;
+        memset(g_mem.translate(root_proc), 0, ROOT_PROC_SIZE);
+
+        // Process header
+        g_mem.write32(root_proc + 0x00, 0x09130001);  // magic
+        g_mem.write32(root_proc + 0x04, 0x000000D3);  // process ID
+        g_mem.write32(root_proc + 0x08, 0x00070000);  // profile 0x0007
+        g_mem.write32(root_proc + 0x0C, 0x02020007);  // flags | profile
+        g_mem.write32(root_proc + 0x10, 0x80394BC4);  // profile descriptor
+        // Self-referential pointers
+        g_mem.write32(root_proc + 0x24, root_proc);
+        g_mem.write32(root_proc + 0x28, 0x01000000);
+        g_mem.write32(root_proc + 0x2C, 0x803BCE20);  // parent sublayer 0
+        g_mem.write32(root_proc + 0x30, 0x0001FFFD);
+        g_mem.write32(root_proc + 0x40, root_proc);
+        g_mem.write32(root_proc + 0x44, 0x01000000);
+        g_mem.write32(root_proc + 0x48, 0x00000001);
+        g_mem.write32(root_proc + 0x58, root_proc);
+        g_mem.write32(root_proc + 0x74, root_proc);
+        // Dispatch/vtable fields
+        g_mem.write32(root_proc + 0x90, 0x8003FD40);  // dispatch function
+        g_mem.write32(root_proc + 0x9C, 0x0001FFFD);
+        g_mem.write32(root_proc + 0xA4, 0x0001FFFD);
+        g_mem.write32(root_proc + 0xA8, 0x80372720);  // function table
+        g_mem.write32(root_proc + 0xB4, 0x09130002);  // sub-state
+
+        // Embedded sublayer 1 starts at root_proc+0xBC
+        uint32_t sublayer1 = root_proc + 0xBC;
+        g_mem.write32(sublayer1 + 0x00, 0x803BCE20);   // prev = sublayer 0
+        g_mem.write32(sublayer1 + 0x04, 0x803726DC);   // parent = root sublayer list
+        g_mem.write32(sublayer1 + 0x08, 0);            // next = NULL (we only create 1 sublayer)
+        g_mem.write32(sublayer1 + 0x0C, 0x00000007);
+        g_mem.write32(root_proc + 0xCC, root_proc + 0xD0);  // node info ptr
+        g_mem.write32(root_proc + 0xD0, 0x00000010);
+        g_mem.write32(root_proc + 0xD4, root_proc);    // back-ref
+
+        // Root process vtable/dispatch table (from Dolphin)
+        g_mem.write32(root_proc + 0xB8, 0x803720E8);  // dispatch vtable
+        g_mem.write32(root_proc + 0x1AC, 0x80394BB0); // profile vtable
+        g_mem.write32(root_proc + 0x1B4, 0x80372150); // another vtable
+        g_mem.write32(root_proc + 0x1BC, root_proc);
+        g_mem.write32(root_proc + 0x1C0, 0x01000000);
+
+        // Insert root process into sublayer 0's listA
+        insert_listA(&g_mem, 0x803BCE20, root_proc);
+
+        // Link sublayer 1 into root layer's sublayer list
+        // Sublayer 0 is head. Make sublayer 1 the next after sublayer 0.
+        uint32_t sl0 = 0x803BCE20;
+        g_mem.write32(sl0 + 0x08, sublayer1);          // sl0.next = sublayer1
+        // Update root sublayer list tail and count
+        g_mem.write32(0x803726E0, sublayer1);           // tail = sublayer1
+        g_mem.write32(0x803726E4, 2);                   // count = 2
+
+        printf("[*]   Root process at 0x%08X (profile 0x0007)\n", root_proc);
+        printf("[*]   Embedded sublayer 1 at 0x%08X\n", sublayer1);
+
+        // --- 2. Create scene process (profile 0x0015, size 0xF8) ---
+        const uint32_t SCENE_PROC_SIZE = 0xF8;
+        uint32_t sp_aligned = (g_bump_alloc_ptr + 31) & ~31;
+        uint32_t scene_proc = sp_aligned;
+        g_bump_alloc_ptr = sp_aligned + SCENE_PROC_SIZE;
+        memset(g_mem.translate(scene_proc), 0, SCENE_PROC_SIZE);
+
+        // Process header
+        g_mem.write32(scene_proc + 0x00, 0x09130001);
+        g_mem.write32(scene_proc + 0x04, 0x000000D4);  // process ID
+        g_mem.write32(scene_proc + 0x08, 0x00150000);   // profile 0x0015
+        g_mem.write32(scene_proc + 0x0C, 0x02020015);
+        g_mem.write32(scene_proc + 0x10, 0x80391B88);   // profile descriptor
+        // Self-referential
+        g_mem.write32(scene_proc + 0x24, scene_proc);
+        g_mem.write32(scene_proc + 0x28, 0x01000000);
+        g_mem.write32(scene_proc + 0x2C, sublayer1);     // parent = sublayer 1
+        g_mem.write32(scene_proc + 0x30, 0x00010000);
+        g_mem.write32(scene_proc + 0x34, root_proc + 0xFC);  // ref to root
+        g_mem.write32(scene_proc + 0x38, 0x803BCD6C);
+        g_mem.write32(scene_proc + 0x40, scene_proc);
+        g_mem.write32(scene_proc + 0x44, 0x01000000);
+        g_mem.write32(scene_proc + 0x48, 0x00000001);
+        g_mem.write32(scene_proc + 0x58, scene_proc);
+        g_mem.write32(scene_proc + 0x74, scene_proc);
+        // Dispatch/state
+        g_mem.write32(scene_proc + 0x90, 0x8003FD40);
+        g_mem.write32(scene_proc + 0x98, 0xFFFFFFFD);
+        g_mem.write32(scene_proc + 0x9C, 0x0001FFFD);
+        g_mem.write32(scene_proc + 0xA0, 0xFFFFFFFD);
+        g_mem.write32(scene_proc + 0xA4, 0x0001FFFD);
+        g_mem.write32(scene_proc + 0xA8, 0x803726E8);   // function table
+        g_mem.write32(scene_proc + 0xB4, 0x09130003);
+        g_mem.write32(scene_proc + 0xB8, 0x80372178);   // dispatch vtable
+        g_mem.write32(scene_proc + 0xBC, 0x00000002);
+        g_mem.write32(scene_proc + 0xC0, 0x09130004);
+        g_mem.write32(scene_proc + 0xC8, 0x803B9E98);
+        g_mem.write32(scene_proc + 0xD0, scene_proc);
+        g_mem.write32(scene_proc + 0xD4, 0x01000000);
+        g_mem.write32(scene_proc + 0xD8, 0x80391B74);   // sub-descriptor
+        g_mem.write32(scene_proc + 0xFC, 0x000002D4);
+
+        // Insert scene process into sublayer 1's listA
+        insert_listA(&g_mem, sublayer1, scene_proc);
+
+        printf("[*]   Scene process at 0x%08X (profile 0x0015)\n", scene_proc);
+
+        // --- 3. Verify sublayer structure ---
+        uint32_t sl0_listA_head = g_mem.read32(0x803BCE20 + 0x38);
+        uint32_t sl0_listA_count = g_mem.read32(0x803BCE20 + 0x40);
+        uint32_t sl1_listA_head = g_mem.read32(sublayer1 + 0x38);
+        uint32_t sl1_listA_count = g_mem.read32(sublayer1 + 0x40);
+        printf("[*]   Sublayer 0 listA: head=0x%08X count=%u\n", sl0_listA_head, sl0_listA_count);
+        printf("[*]   Sublayer 1 listA: head=0x%08X count=%u\n", sl1_listA_head, sl1_listA_count);
+        printf("[*] Process tree populated.\n");
     }
     fflush(stdout);
 
@@ -1399,11 +1586,11 @@ int main(int argc, char** argv) {
                 const uint32_t CREATE_Q = 0x803A72C0;
                 uint32_t post_count = g_mem.read32(CREATE_Q + 44);
                 uint32_t post_head = g_mem.read32(CREATE_Q + 36);
-                uint32_t tree_n = g_mem.read32(0x803726A0 + 8);
+                uint32_t sl0_n = g_mem.read32(0x803BCE20 + 0x40);
                 uint32_t desc_head = g_mem.read32(g_ctx.r[13] - 28120);
                 uint32_t desc_tail = g_mem.read32(g_ctx.r[13] - 28116);
-                fprintf(stderr, "[FW] Post-pump: q_count=%u q_head=0x%X tree=%u desc_head=0x%X desc_tail=0x%X\n",
-                        post_count, post_head, tree_n, desc_head, desc_tail);
+                fprintf(stderr, "[FW] Post-pump: q_count=%u q_head=0x%X sl0=%u desc_head=0x%X desc_tail=0x%X\n",
+                        post_count, post_head, sl0_n, desc_head, desc_tail);
                 fflush(stderr);
             }
 
@@ -1424,14 +1611,15 @@ int main(int argc, char** argv) {
                 int16_t ss = (int16_t)g_mem.read16(g_ctx.r[13] - 30754);
                 uint32_t dq = g_mem.read32(g_ctx.r[13] - 26400);
                 uint8_t scene_flag = g_mem.read8(0x803CA701);
-                // Process tree root at 0x803726A0 (fapGm process list)
-                uint32_t tree_ptr = g_mem.read32(0x803726A0);
-                uint32_t tree_count = g_mem.read32(0x803726A0 + 8);
+                // Sublayer process counts (real process location, not flat tree)
+                uint32_t sl0_count = g_mem.read32(0x803BCE20 + 0x40);  // sublayer 0 listA
                 // Scene manager at r13(-27984)
                 uint32_t scene_mgr = g_mem.read32(g_ctx.r[13] - 27984);
-                fprintf(stderr, "[*] Frame %d (state=%d dvdq=0x%X flag=0x%X tree=0x%X/%u scnmgr=0x%X)\n",
+                // Root sublayer list count
+                uint32_t sl_count = g_mem.read32(0x803726E4);
+                fprintf(stderr, "[*] Frame %d (state=%d dvdq=0x%X flag=0x%X sl0=%u sublayers=%u scnmgr=0x%X)\n",
                         frame, ss, dq, scene_flag,
-                        tree_ptr, tree_count, scene_mgr);
+                        sl0_count, sl_count, scene_mgr);
             }
 
             Sleep(16);  // ~60 FPS
