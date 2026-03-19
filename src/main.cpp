@@ -42,14 +42,16 @@ static const uint32_t WINDOW_HEIGHT = 720;
 
 static std::atomic<bool> g_game_running{false};
 
-// Parsed BDL model for rendering (room geometry)
-static j3d::J3DModel g_room_model;
-static const uint8_t* g_room_bdl_data = nullptr;
-static uint32_t g_room_bdl_size = 0;
+// Parsed BDL models for rendering
+static j3d::J3DModel g_room_model;    // Island terrain
+static j3d::J3DModel g_water_model;   // Ocean water
 static bool g_room_model_loaded = false;
+static bool g_water_model_loaded = false;
 static bool g_textures_loaded = false;
+static bool g_water_textures_loaded = false;
 static float g_camera_angle = 0.0f;
-static gcrecomp::gx::GXTexObj g_tex_objs[8] = {}; // up to 8 textures
+static gcrecomp::gx::GXTexObj g_tex_objs[8] = {};      // room textures
+static gcrecomp::gx::GXTexObj g_water_tex_objs[9] = {}; // water textures
 
 // Forward declarations for recompiled functions
 extern void func_8030CFB0(PPCContext* ctx, Memory* mem);  // Small init helper
@@ -286,6 +288,179 @@ static void print_banner() {
     printf("       No emulator. Just the wind at your back.\n");
     printf("  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
     printf("\n");
+}
+
+// Helper: render a J3D model with its textures through the GX pipeline
+static void render_j3d_model(const j3d::J3DModel& model,
+                             gcrecomp::gx::GXTexObj* tex_objs, bool& textures_loaded,
+                             bool use_alpha = false) {
+    using namespace gcrecomp::gx;
+
+    // Find vertex arrays
+    const j3d::VertexArray* pos_array = nullptr;
+    const j3d::VertexArray* tc_array = nullptr;
+    for (const auto& va : model.vertex_arrays) {
+        if (va.attr == j3d::GX_VA_POS) pos_array = &va;
+        if (va.attr == j3d::GX_VA_TEX0) tc_array = &va;
+    }
+    if (!pos_array || pos_array->count == 0 || pos_array->comp_type != 4) return;
+
+    const uint8_t* pos_data = pos_array->data;
+    uint32_t pos_count = pos_array->count;
+
+    // Load textures once
+    if (!textures_loaded && !model.textures.empty()) {
+        textures_loaded = true;
+        uint32_t ntex = std::min((uint32_t)model.textures.size(), 9u);
+        for (uint32_t t = 0; t < ntex; t++) {
+            const auto& th = model.textures[t];
+            if (th.image_data && th.width > 0 && th.height > 0) {
+                GXInitTexObj(&tex_objs[t], th.image_data,
+                            th.width, th.height,
+                            (GXTexFmt)th.format,
+                            th.wrap_s, th.wrap_t, th.mipmap_count > 1);
+            }
+        }
+    }
+
+    // Vertex format
+    GXClearVtxDesc();
+    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+    if (tc_array && textures_loaded) {
+        GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+    }
+
+    uint32_t tc_count = tc_array ? tc_array->count : 0;
+    const uint8_t* tc_data = tc_array ? tc_array->data : nullptr;
+    uint32_t tc_stride = tc_array ? tc_array->stride : 0;
+    uint32_t tc_type = tc_array ? tc_array->comp_type : 0;
+    uint32_t tc_frac = tc_array ? tc_array->frac_bits : 0;
+
+    for (uint32_t si = 0; si < model.shapes.size(); si++) {
+        const auto& shape = model.shapes[si];
+
+        // Bind texture for this batch based on material mapping
+        int mat_idx = (si < model.shape_material.size()) ? model.shape_material[si] : (int)si;
+        if (mat_idx < 0) mat_idx = (int)si;
+        // Use material index as texture index (1:1 mapping)
+        uint32_t tex_idx = (uint32_t)mat_idx;
+        if (tex_idx >= model.textures.size()) tex_idx = 0;
+
+        if (textures_loaded && !model.textures.empty()) {
+            GXLoadTexObj(&tex_objs[tex_idx], 0);
+            GXSetNumTevStages(1);
+            GXSetTevOrder(GX_TEVSTAGE0, 0, 0, 0);
+            GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
+            GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+            GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
+            GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+        } else {
+            GXSetNumTevStages(1);
+            GXSetTevOrder(GX_TEVSTAGE0, 0xFF, 0xFF, 0);
+            GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_RASC);
+            GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+            GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
+            GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+        }
+
+        if (use_alpha) {
+            GXSetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, 0);
+        } else {
+            GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, 0);
+        }
+
+        for (const auto& pkt : shape.packets) {
+            if (!pkt.display_list || pkt.display_list_size < 4) continue;
+            const uint8_t* dl = pkt.display_list;
+            uint32_t dl_end = pkt.display_list_size;
+            uint32_t dp = 0;
+
+            uint32_t bpv = 0;
+            for (const auto& a : shape.attribs) {
+                if (a.data_type == 1) bpv += 1;
+                else if (a.data_type == 2) bpv += 1;
+                else if (a.data_type == 3) bpv += 2;
+            }
+            if (bpv == 0) continue;
+
+            while (dp < dl_end) {
+                uint8_t cmd = dl[dp];
+                if (cmd == 0) { dp++; continue; }
+                if (cmd < 0x80) { dp++; continue; }
+
+                uint8_t prim_type = cmd & 0xF8;
+                if (dp + 3 > dl_end) break;
+                uint16_t vert_count = j3d::read16(dl + dp + 1);
+                dp += 3;
+                if (vert_count == 0 || dp + vert_count * bpv > dl_end) break;
+
+                struct Vtx { float x, y, z; uint8_t r, g, b, a; float s, t; };
+                std::vector<Vtx> verts(vert_count);
+
+                for (uint16_t v = 0; v < vert_count; v++) {
+                    uint16_t pos_idx = 0, tc_idx2 = 0;
+                    for (const auto& a : shape.attribs) {
+                        uint16_t idx = 0;
+                        if (a.data_type == 2) { idx = dl[dp]; dp += 1; }
+                        else if (a.data_type == 3) { idx = j3d::read16(dl + dp); dp += 2; }
+                        else if (a.data_type == 1) { dp += 1; continue; }
+                        else continue;
+                        if (a.attr == 9) pos_idx = idx;
+                        if (a.attr == 13) tc_idx2 = idx;
+                    }
+                    if (pos_idx < pos_count) {
+                        verts[v].x = j3d::readf32(pos_data + pos_idx * 12 + 0);
+                        verts[v].y = j3d::readf32(pos_data + pos_idx * 12 + 4);
+                        verts[v].z = j3d::readf32(pos_data + pos_idx * 12 + 8);
+                    }
+                    if (tc_data && tc_idx2 < tc_count && tc_stride >= 4 && tc_type == 3) {
+                        float scale = 1.0f / (float)(1 << tc_frac);
+                        const uint8_t* tcp = tc_data + tc_idx2 * tc_stride;
+                        verts[v].s = (float)j3d::reads16(tcp + 0) * scale;
+                        verts[v].t = (float)j3d::reads16(tcp + 2) * scale;
+                    }
+                    int yi = (int)(verts[v].y * 0.1f);
+                    verts[v].r = (uint8_t)std::min(255, std::max(0, 80 + yi));
+                    verts[v].g = (uint8_t)std::min(255, std::max(0, 140 + yi));
+                    verts[v].b = (uint8_t)std::min(255, std::max(0, 60 + yi / 2));
+                    verts[v].a = use_alpha ? 180 : 255;
+                }
+
+                // Convert to triangles
+                std::vector<Vtx> tris;
+                if (prim_type == 0x98) {
+                    for (uint16_t v = 2; v < vert_count; v++) {
+                        if (v & 1) { tris.push_back(verts[v-1]); tris.push_back(verts[v-2]); tris.push_back(verts[v]); }
+                        else       { tris.push_back(verts[v-2]); tris.push_back(verts[v-1]); tris.push_back(verts[v]); }
+                    }
+                } else if (prim_type == 0xA0) {
+                    for (uint16_t v = 2; v < vert_count; v++) {
+                        tris.push_back(verts[0]); tris.push_back(verts[v-1]); tris.push_back(verts[v]);
+                    }
+                } else if (prim_type == 0x90) {
+                    for (uint16_t v = 0; v + 2 < vert_count; v += 3) {
+                        tris.push_back(verts[v]); tris.push_back(verts[v+1]); tris.push_back(verts[v+2]);
+                    }
+                }
+
+                if (!tris.empty()) {
+                    uint32_t tc2 = (uint32_t)tris.size();
+                    if (tc2 > 60000) tc2 = 60000;
+                    GXBegin(GX_TRIANGLES, 0, tc2);
+                    for (uint32_t ti = 0; ti < tc2; ti++) {
+                        GXPosition3f32(tris[ti].x, tris[ti].y, tris[ti].z);
+                        GXColor4u8(tris[ti].r, tris[ti].g, tris[ti].b, tris[ti].a);
+                        if (tc_array && textures_loaded) {
+                            GXTexCoord2f32(tris[ti].s, tris[ti].t);
+                        }
+                        GXSubmitVertex();
+                    }
+                    GXEnd();
+                }
+            }
+        }
+    }
 }
 
 int main(int argc, char** argv) {
@@ -916,13 +1091,15 @@ int main(int argc, char** argv) {
                                 j3d::J3DModel model;
                                 if (j3d::j3d_parse(bdl_data, f->data_size, model)) {
                                     j3d::j3d_print_summary(model);
-                                    // Keep main room model for rendering
+                                    // Keep models for rendering
                                     if (strcmp(*name, "bdl/model.bdl") == 0) {
                                         g_room_model = std::move(model);
-                                        g_room_bdl_data = bdl_data;
-                                        g_room_bdl_size = f->data_size;
                                         g_room_model_loaded = true;
-                                        printf("[*]   Stored for rendering.\n");
+                                        printf("[*]   Stored room model for rendering.\n");
+                                    } else if (strcmp(*name, "bdl/model1.bdl") == 0) {
+                                        g_water_model = std::move(model);
+                                        g_water_model_loaded = true;
+                                        printf("[*]   Stored water model for rendering.\n");
                                     }
                                 } else {
                                     printf("[*]   J3D parse failed\n");
@@ -1133,220 +1310,55 @@ int main(int argc, char** argv) {
         input::input_update();
         audio::audio_update();
 
-        // ---- Render room geometry ----
-        if (g_room_model_loaded && !g_room_model.vertex_arrays.empty()) {
+        // ---- Render scene ----
+        if (g_room_model_loaded) {
             using namespace gcrecomp::gx;
 
-            // Find vertex arrays
-            const j3d::VertexArray* pos_array = nullptr;
-            const j3d::VertexArray* tc_array = nullptr;
-            for (const auto& va : g_room_model.vertex_arrays) {
-                if (va.attr == j3d::GX_VA_POS) pos_array = &va;
-                if (va.attr == j3d::GX_VA_TEX0) tc_array = &va;
-            }
+            // Rotate camera slowly around the island
+            g_camera_angle += 0.005f;
+            float ca = cosf(g_camera_angle), sa = sinf(g_camera_angle);
+            float dist = 8000.0f;
+            float eye_x = sa * dist, eye_z = ca * dist, eye_y = 3000.0f;
 
-            if (pos_array && pos_array->count > 0 && pos_array->comp_type == 4 /*f32*/) {
-                // Rotate camera slowly
-                g_camera_angle += 0.005f;
-                float ca = cosf(g_camera_angle), sa = sinf(g_camera_angle);
-                float dist = 8000.0f;  // Camera distance
-                float eye_x = sa * dist, eye_z = ca * dist, eye_y = 3000.0f;
+            // Look-at model-view matrix
+            float fx = -eye_x, fy = -eye_y, fz = -eye_z;
+            float fl = sqrtf(fx*fx + fy*fy + fz*fz);
+            fx /= fl; fy /= fl; fz /= fl;
+            float rx = fz, ry = 0.0f, rz = -fx;
+            float rl = sqrtf(rx*rx + rz*rz);
+            if (rl > 0.001f) { rx /= rl; rz /= rl; }
+            float ux = fy*rz - fz*ry, uy = fz*rx - fx*rz, uz = fx*ry - fy*rx;
 
-                // Simple look-at model-view matrix (row-major 3x4)
-                // Forward = normalize(-eye)
-                float fx = -eye_x, fy = -eye_y, fz = -eye_z;
-                float fl = sqrtf(fx*fx + fy*fy + fz*fz);
-                fx /= fl; fy /= fl; fz /= fl;
-                // Right = normalize(cross(up, forward))
-                float rx = fz, ry = 0.0f, rz = -fx;  // up=(0,1,0) simplified
-                float rl = sqrtf(rx*rx + rz*rz);
-                if (rl > 0.001f) { rx /= rl; rz /= rl; }
-                // Up = cross(forward, right)
-                float ux = fy*rz - fz*ry, uy = fz*rx - fx*rz, uz = fx*ry - fy*rx;
+            float mv[3][4] = {
+                { rx, ry, rz, -(rx*eye_x + ry*eye_y + rz*eye_z) },
+                { ux, uy, uz, -(ux*eye_x + uy*eye_y + uz*eye_z) },
+                { fx, fy, fz, -(fx*eye_x + fy*eye_y + fz*eye_z) },
+            };
+            GXLoadPosMtxImm(mv, 0);
+            GXSetCurrentMtx(0);
 
-                float mv[3][4] = {
-                    { rx, ry, rz, -(rx*eye_x + ry*eye_y + rz*eye_z) },
-                    { ux, uy, uz, -(ux*eye_x + uy*eye_y + uz*eye_z) },
-                    { fx, fy, fz, -(fx*eye_x + fy*eye_y + fz*eye_z) },
-                };
-                GXLoadPosMtxImm(mv, 0);
-                GXSetCurrentMtx(0);
+            // Perspective projection
+            float aspect = 1280.0f / 720.0f;
+            float fovy = 60.0f * 3.14159f / 180.0f;
+            float near_z = 100.0f, far_z = 50000.0f;
+            float t = tanf(fovy * 0.5f);
+            float proj[4][4] = {};
+            proj[0][0] = 1.0f / (aspect * t);
+            proj[1][1] = 1.0f / t;
+            proj[2][2] = -(far_z + near_z) / (far_z - near_z);
+            proj[2][3] = -2.0f * far_z * near_z / (far_z - near_z);
+            proj[3][2] = -1.0f;
+            GXSetProjection(proj, 0);
+            GXSetViewport(0, 0, 1280, 720, 0.0f, 1.0f);
+            GXSetZMode(true, GX_LEQUAL, true);
+            GXSetCullMode(GX_CULL_NONE);
 
-                // Perspective projection
-                float aspect = 1280.0f / 720.0f;
-                float fovy = 60.0f * 3.14159f / 180.0f;
-                float near_z = 100.0f, far_z = 50000.0f;
-                float t = tanf(fovy * 0.5f);
-                float proj[4][4] = {};
-                proj[0][0] = 1.0f / (aspect * t);
-                proj[1][1] = 1.0f / t;
-                proj[2][2] = -(far_z + near_z) / (far_z - near_z);
-                proj[2][3] = -2.0f * far_z * near_z / (far_z - near_z);
-                proj[3][2] = -1.0f;
-                GXSetProjection(proj, 0); // 0 = perspective
+            // Render island terrain (opaque)
+            render_j3d_model(g_room_model, g_tex_objs, g_textures_loaded, false);
 
-                GXSetViewport(0, 0, 1280, 720, 0.0f, 1.0f);
-
-                // Load textures once
-                if (!g_textures_loaded && !g_room_model.textures.empty()) {
-                    g_textures_loaded = true;
-                    uint32_t ntex = std::min((uint32_t)g_room_model.textures.size(), 8u);
-                    for (uint32_t t = 0; t < ntex; t++) {
-                        const auto& th = g_room_model.textures[t];
-                        if (th.image_data && th.width > 0 && th.height > 0) {
-                            GXInitTexObj(&g_tex_objs[t], th.image_data,
-                                        th.width, th.height,
-                                        (GXTexFmt)th.format,
-                                        th.wrap_s, th.wrap_t, th.mipmap_count > 1);
-                            printf("[GFX] Loaded texture %u: %s %ux%u fmt=%u\n",
-                                   t, th.name.c_str(), th.width, th.height, th.format);
-                        }
-                    }
-                }
-
-                // TEV: modulate texture with vertex color
-                // Stage 0: output = TEXC * RASC (texture color * vertex color)
-                if (g_textures_loaded) {
-                    GXLoadTexObj(&g_tex_objs[0], 0); // bind texture 0 to map 0
-                    GXSetNumTevStages(1);
-                    GXSetTevOrder(GX_TEVSTAGE0, 0, 0, 0); // texcoord0, texmap0, color0
-                    GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
-                    GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
-                    GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
-                    GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
-                } else {
-                    // Fallback: vertex color only
-                    GXSetNumTevStages(1);
-                    GXSetTevOrder(GX_TEVSTAGE0, 0xFF, 0xFF, 0);
-                    GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_RASC);
-                    GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
-                    GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
-                    GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
-                }
-
-                GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, 0);
-                GXSetZMode(true, GX_LEQUAL, true);
-                GXSetCullMode(GX_CULL_NONE);
-
-                // Vertex format: direct position + direct color + direct texcoord
-                GXClearVtxDesc();
-                GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
-                GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
-                if (tc_array && g_textures_loaded) {
-                    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
-                }
-
-                // Render room geometry using indexed display lists from SHP1.
-                // Each shape batch contains triangle strips/fans with 16-bit
-                // indices into the VTX1 position/color/texcoord arrays.
-                const uint8_t* pos_data = pos_array->data;
-                uint32_t pos_count = pos_array->count;
-
-                for (const auto& shape : g_room_model.shapes) {
-                    for (const auto& pkt : shape.packets) {
-                        if (!pkt.display_list || pkt.display_list_size < 4) continue;
-                        const uint8_t* dl = pkt.display_list;
-                        uint32_t dl_end = pkt.display_list_size;
-                        uint32_t dp = 0;
-
-                        // Calculate bytes per vertex from batch attributes
-                        uint32_t bpv = 0;
-                        for (const auto& a : shape.attribs) {
-                            if (a.data_type == 1) bpv += 1;      // direct byte
-                            else if (a.data_type == 2) bpv += 1;  // index8
-                            else if (a.data_type == 3) bpv += 2;  // index16
-                        }
-                        if (bpv == 0) continue;
-
-                        while (dp < dl_end) {
-                            uint8_t cmd = dl[dp];
-                            if (cmd == 0) { dp++; continue; } // NOP padding
-                            if (cmd < 0x80) { dp++; continue; } // skip non-draw
-
-                            uint8_t prim_type = cmd & 0xF8;
-                            if (dp + 3 > dl_end) break;
-                            uint16_t vert_count = j3d::read16(dl + dp + 1);
-                            dp += 3;
-
-                            if (vert_count == 0 || dp + vert_count * bpv > dl_end) break;
-
-                            // Collect triangle strip/fan vertices into a flat list
-                            struct Vtx { float x, y, z; uint8_t r, g, b; float s, t; };
-                            std::vector<Vtx> verts(vert_count);
-
-                            uint32_t tc_count = tc_array ? tc_array->count : 0;
-                            const uint8_t* tc_data = tc_array ? tc_array->data : nullptr;
-                            uint32_t tc_stride = tc_array ? tc_array->stride : 0;
-                            uint32_t tc_type = tc_array ? tc_array->comp_type : 0;
-                            uint32_t tc_frac = tc_array ? tc_array->frac_bits : 0;
-
-                            for (uint16_t v = 0; v < vert_count; v++) {
-                                uint16_t pos_idx = 0, tc_idx = 0;
-                                for (const auto& a : shape.attribs) {
-                                    uint16_t idx = 0;
-                                    if (a.data_type == 2) { idx = dl[dp]; dp += 1; }
-                                    else if (a.data_type == 3) { idx = j3d::read16(dl + dp); dp += 2; }
-                                    else if (a.data_type == 1) { dp += 1; continue; }
-                                    else continue;
-                                    if (a.attr == 9) pos_idx = idx; // GX_VA_POS
-                                    if (a.attr == 13) tc_idx = idx; // GX_VA_TEX0
-                                }
-                                if (pos_idx < pos_count) {
-                                    verts[v].x = j3d::readf32(pos_data + pos_idx * 12 + 0);
-                                    verts[v].y = j3d::readf32(pos_data + pos_idx * 12 + 4);
-                                    verts[v].z = j3d::readf32(pos_data + pos_idx * 12 + 8);
-                                } else {
-                                    verts[v] = {0,0,0, 128,128,128, 0,0};
-                                }
-                                // Texcoord lookup (s16 with frac_bits)
-                                if (tc_data && tc_idx < tc_count && tc_stride >= 4 && tc_type == 3 /*s16*/) {
-                                    float scale = 1.0f / (float)(1 << tc_frac);
-                                    const uint8_t* tcp = tc_data + tc_idx * tc_stride;
-                                    verts[v].s = (float)j3d::reads16(tcp + 0) * scale;
-                                    verts[v].t = (float)j3d::reads16(tcp + 2) * scale;
-                                } else {
-                                    verts[v].s = 0; verts[v].t = 0;
-                                }
-                                int yi = (int)(verts[v].y * 0.1f);
-                                verts[v].r = (uint8_t)std::min(255, std::max(0, 80 + yi));
-                                verts[v].g = (uint8_t)std::min(255, std::max(0, 140 + yi));
-                                verts[v].b = (uint8_t)std::min(255, std::max(0, 60 + yi / 2));
-                            }
-
-                            // Convert strip/fan to triangles and draw
-                            std::vector<Vtx> tris;
-                            if (prim_type == 0x98) { // Triangle strip
-                                for (uint16_t v = 2; v < vert_count; v++) {
-                                    if (v & 1) { tris.push_back(verts[v-1]); tris.push_back(verts[v-2]); tris.push_back(verts[v]); }
-                                    else       { tris.push_back(verts[v-2]); tris.push_back(verts[v-1]); tris.push_back(verts[v]); }
-                                }
-                            } else if (prim_type == 0xA0) { // Triangle fan
-                                for (uint16_t v = 2; v < vert_count; v++) {
-                                    tris.push_back(verts[0]); tris.push_back(verts[v-1]); tris.push_back(verts[v]);
-                                }
-                            } else if (prim_type == 0x90) { // Triangles
-                                for (uint16_t v = 0; v + 2 < vert_count; v += 3) {
-                                    tris.push_back(verts[v]); tris.push_back(verts[v+1]); tris.push_back(verts[v+2]);
-                                }
-                            }
-
-                            if (!tris.empty()) {
-                                uint32_t tc = (uint32_t)tris.size();
-                                if (tc > 60000) tc = 60000;
-                                GXBegin(GX_TRIANGLES, 0, tc);
-                                for (uint32_t ti = 0; ti < tc; ti++) {
-                                    GXPosition3f32(tris[ti].x, tris[ti].y, tris[ti].z);
-                                    GXColor4u8(tris[ti].r, tris[ti].g, tris[ti].b, 255);
-                                    if (tc_array && g_textures_loaded) {
-                                        GXTexCoord2f32(tris[ti].s, tris[ti].t);
-                                    }
-                                    GXSubmitVertex();
-                                }
-                                GXEnd();
-                            }
-                        }
-                    }
-                }
+            // Render ocean water (translucent)
+            if (g_water_model_loaded) {
+                render_j3d_model(g_water_model, g_water_tex_objs, g_water_textures_loaded, true);
             }
         }
 
