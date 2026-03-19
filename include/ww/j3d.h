@@ -150,6 +150,10 @@ struct J3DModel {
     // TEX1 — textures
     std::vector<TextureHeader> textures;
 
+    // INF1 — shape-to-material mapping
+    // shape_material[shape_index] = material_index
+    std::vector<int> shape_material;
+
     // Section offsets (for debugging)
     struct SectionInfo {
         uint32_t tag;

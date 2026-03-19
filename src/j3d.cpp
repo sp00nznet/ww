@@ -35,6 +35,29 @@ static uint32_t compute_stride(uint32_t attr, uint32_t comp_type, uint32_t comp_
     return comp_count * comp_size;
 }
 
+// Parse INF1 section — scene graph hierarchy (shape→material mapping)
+static bool parse_inf1(const uint8_t* section, uint32_t section_size, J3DModel& model) {
+    if (section_size < 0x1C) return false;
+    // Hierarchy data starts at +0x18
+    uint32_t hier_off = 0x18;
+    int cur_material = -1;
+    uint32_t hp = hier_off;
+    while (hp + 4 <= section_size) {
+        uint16_t htype = read16(section + hp);
+        uint16_t hidx  = read16(section + hp + 2);
+        if (htype == 0x11) cur_material = (int)hidx;  // material node
+        if (htype == 0x12) {                            // shape node
+            // Ensure vector is large enough
+            while (model.shape_material.size() <= hidx)
+                model.shape_material.push_back(-1);
+            model.shape_material[hidx] = cur_material;
+        }
+        if (htype == 0) break; // end
+        hp += 4;
+    }
+    return true;
+}
+
 // Parse VTX1 section — vertex arrays
 static bool parse_vtx1(const uint8_t* section, uint32_t section_size, J3DModel& model) {
     if (section_size < 0x44) return false;
@@ -312,6 +335,9 @@ bool j3d_parse(const uint8_t* data, size_t size, J3DModel& out) {
         const uint8_t* sec_data = data + pos;
 
         switch (tag) {
+            case TAG_INF1:
+                parse_inf1(sec_data, sec_size, out);
+                break;
             case TAG_VTX1:
                 parse_vtx1(sec_data, sec_size, out);
                 break;
