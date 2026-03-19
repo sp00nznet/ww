@@ -420,11 +420,25 @@ static void render_j3d_model(const j3d::J3DModel& model,
                         verts[v].s = (float)j3d::reads16(tcp + 0) * scale;
                         verts[v].t = (float)j3d::reads16(tcp + 2) * scale;
                     }
-                    int yi = (int)(verts[v].y * 0.1f);
-                    verts[v].r = (uint8_t)std::min(255, std::max(0, 80 + yi));
-                    verts[v].g = (uint8_t)std::min(255, std::max(0, 140 + yi));
-                    verts[v].b = (uint8_t)std::min(255, std::max(0, 60 + yi / 2));
-                    verts[v].a = use_alpha ? 180 : 255;
+                    // Color by height: low=sand, mid=green, high=brown/rock
+                    float h = verts[v].y;
+                    if (use_alpha) {
+                        // Water: blue tones
+                        verts[v].r = 40; verts[v].g = 80; verts[v].b = 180;
+                    } else if (h < 200.0f) {
+                        // Low: sandy beach
+                        verts[v].r = 210; verts[v].g = 190; verts[v].b = 130;
+                    } else if (h < 1500.0f) {
+                        // Mid: green vegetation
+                        float t2 = (h - 200.0f) / 1300.0f;
+                        verts[v].r = (uint8_t)(60 + 40 * t2);
+                        verts[v].g = (uint8_t)(140 + 40 * t2);
+                        verts[v].b = (uint8_t)(50 + 30 * t2);
+                    } else {
+                        // High: rocky
+                        verts[v].r = 130; verts[v].g = 115; verts[v].b = 90;
+                    }
+                    verts[v].a = use_alpha ? 140 : 255;
                 }
 
                 // Convert to triangles
@@ -1314,40 +1328,32 @@ int main(int argc, char** argv) {
         if (g_room_model_loaded) {
             using namespace gcrecomp::gx;
 
-            // Rotate camera slowly around the island
-            g_camera_angle += 0.005f;
-            float ca = cosf(g_camera_angle), sa = sinf(g_camera_angle);
-            float dist = 8000.0f;
-            float eye_x = sa * dist, eye_z = ca * dist, eye_y = 3000.0f;
+            // Rotate around Y axis, tilt down to see the island from above
+            g_camera_angle += 0.006f;
 
-            // Look-at model-view matrix
-            float fx = -eye_x, fy = -eye_y, fz = -eye_z;
-            float fl = sqrtf(fx*fx + fy*fy + fz*fz);
-            fx /= fl; fy /= fl; fz /= fl;
-            float rx = fz, ry = 0.0f, rz = -fx;
-            float rl = sqrtf(rx*rx + rz*rz);
-            if (rl > 0.001f) { rx /= rl; rz /= rl; }
-            float ux = fy*rz - fz*ry, uy = fz*rx - fx*rz, uz = fx*ry - fy*rx;
+            float sc = 1.0f / 6000.0f;  // scale to fill more of the screen
 
+            // Y rotation (azimuth spin)
+            float cy = cosf(g_camera_angle), sy = sinf(g_camera_angle);
+            // X rotation (tilt down ~40 degrees)
+            float tilt_angle = -0.7f;
+            float cx = cosf(tilt_angle), sx = sinf(tilt_angle);
+
+            // MV = Tilt_X * Rotate_Y * Scale, centered on screen
             float mv[3][4] = {
-                { rx, ry, rz, -(rx*eye_x + ry*eye_y + rz*eye_z) },
-                { ux, uy, uz, -(ux*eye_x + uy*eye_y + uz*eye_z) },
-                { fx, fy, fz, -(fx*eye_x + fy*eye_y + fz*eye_z) },
+                { cy * sc,              0.0f,        sy * sc,              0.0f },
+                { sx * sy * sc,         cx * sc,    -sx * cy * sc,        -0.15f },
+                { -cx * sy * sc,        sx * sc,     cx * cy * sc,        -1.0f },
             };
             GXLoadPosMtxImm(mv, 0);
             GXSetCurrentMtx(0);
 
-            // Perspective projection
-            float aspect = 1280.0f / 720.0f;
-            float fovy = 60.0f * 3.14159f / 180.0f;
-            float near_z = 100.0f, far_z = 50000.0f;
-            float t = tanf(fovy * 0.5f);
+            // Orthographic projection with aspect correction
             float proj[4][4] = {};
-            proj[0][0] = 1.0f / (aspect * t);
-            proj[1][1] = 1.0f / t;
-            proj[2][2] = -(far_z + near_z) / (far_z - near_z);
-            proj[2][3] = -2.0f * far_z * near_z / (far_z - near_z);
-            proj[3][2] = -1.0f;
+            proj[0][0] = 720.0f / 1280.0f;
+            proj[1][1] = 1.0f;
+            proj[2][2] = 0.001f;
+            proj[3][3] = 1.0f;
             GXSetProjection(proj, 0);
             GXSetViewport(0, 0, 1280, 720, 0.0f, 1.0f);
             GXSetZMode(true, GX_LEQUAL, true);
