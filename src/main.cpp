@@ -671,6 +671,41 @@ int main(int argc, char** argv) {
                 proc_addr, next_proc_id - 1);
         fflush(stderr);
     });
+    // Per-process execute callback (via CALL_INDIRECT from layer iterator).
+    // Logs dispatch to verify processes are being reached each frame.
+    g_func_table.register_func(0x80040198, [](PPCContext* ctx, Memory* mem) {
+        static int trace_count = 0;
+        uint32_t node = ctx->r[3];
+        uint32_t proc_base = (node >= 0x80000000) ? mem->read32(node + 12) : 0;
+        if (trace_count < 10) {
+            uint32_t profile = (proc_base >= 0x80000000) ? mem->read32(proc_base + 8) >> 16 : 0;
+            fprintf(stderr, "[EXEC] process=0x%08X profile=0x%04X dispatched\n", proc_base, profile);
+            fflush(stderr);
+        }
+        trace_count++;
+
+        // Execute the real callback chain
+        extern void func_8003D96C(PPCContext* ctx, Memory* mem);
+        extern void func_8003D964(PPCContext* ctx, Memory* mem);
+        extern void func_8024560C(PPCContext* ctx, Memory* mem);
+
+        uint32_t r28 = ctx->r[3];
+        uint32_t r29 = ctx->r[4];
+        ctx->r[3] = mem->read32(node + 12);
+        uint32_t r31 = mem->read32(ctx->r[3] + 44);
+
+        func_8003D96C(ctx, mem);
+        uint32_t r30 = ctx->r[3];
+        ctx->r[3] = r31;
+        func_8003D964(ctx, mem);
+        ctx->r[3] = r28;
+        ctx->r[4] = r29;
+        func_8024560C(ctx, mem);
+        uint32_t result = ctx->r[3];
+        ctx->r[3] = r30;
+        func_8003D964(ctx, mem);
+        ctx->r[3] = result;
+    });
     // PPCHalt (0x8030150C): infinite spin loop → return immediately
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
     // OSReport (0x802CB8D0): debug printf that may write to HW console → no-op
@@ -1031,6 +1066,54 @@ int main(int argc, char** argv) {
         uint32_t sl1_listA_count = g_mem.read32(sublayer1 + 0x40);
         printf("[*]   Sublayer 0 listA: head=0x%08X count=%u\n", sl0_listA_head, sl0_listA_count);
         printf("[*]   Sublayer 1 listA: head=0x%08X count=%u\n", sl1_listA_head, sl1_listA_count);
+
+        // --- 4. Populate the per-frame execution queue at 0x803BCD60 ---
+        // func_80040200 (called from fapGm_Execute) reads r13(-32608) as the
+        // root iteration data pointer. This points to 0x803BCD60, which contains
+        // multiple priority lists (head/tail/count at 12-byte intervals).
+        // Processes link into this via a node at process+0x34.
+        //
+        // From Dolphin: root proc (0x80AC10C8+0x34) and scene proc (0x80ABE8E8+0x34)
+        // are both in list[1] at offset +0x0C (anchor = 0x803BCD6C).
+        const uint32_t EXEC_QUEUE = 0x803BCD60;
+
+        // Helper: insert process into execution queue list
+        auto insert_exec_list = [](Memory* mem, uint32_t list_anchor, uint32_t proc_addr) {
+            uint32_t node_addr = proc_addr + 0x34;  // exec queue node at +0x34
+            mem->write32(node_addr + 0, 0);           // prev = NULL
+            mem->write32(node_addr + 4, list_anchor); // anchor
+            mem->write32(node_addr + 8, 0);           // next = NULL
+            mem->write32(node_addr + 0xC, proc_addr); // back-pointer
+            // Update list
+            uint32_t old_head = mem->read32(list_anchor);
+            if (old_head == 0) {
+                mem->write32(list_anchor, node_addr);     // head
+                mem->write32(list_anchor + 4, node_addr); // tail
+                mem->write32(list_anchor + 8, 1);         // count
+            } else {
+                uint32_t old_tail = mem->read32(list_anchor + 4);
+                mem->write32(old_tail + 8, node_addr);    // old_tail.next = new
+                mem->write32(node_addr + 0, old_tail);    // new.prev = old_tail
+                mem->write32(list_anchor + 4, node_addr); // list.tail = new
+                uint32_t count = mem->read32(list_anchor + 8);
+                mem->write32(list_anchor + 8, count + 1);
+            }
+        };
+
+        // Insert root process into exec queue list[1] (offset +0x0C)
+        insert_exec_list(&g_mem, EXEC_QUEUE + 0x0C, root_proc);
+        // Insert scene process into exec queue list[1]
+        insert_exec_list(&g_mem, EXEC_QUEUE + 0x0C, scene_proc);
+
+        // Set r13(-32608) = exec queue base, r13(-32604) = number of lists
+        // func_802450D0 reads these: base ptr at -32608, list count at -32604
+        // In Dolphin: 16 lists (each 12 bytes: head/tail/count)
+        g_mem.write32(g_ctx.r[13] - 32608, EXEC_QUEUE);
+        g_mem.write32(g_ctx.r[13] - 32604, 16);  // 16 priority lists
+
+        printf("[*]   Exec queue at 0x%08X: list[1] count=%u\n",
+               EXEC_QUEUE, g_mem.read32(EXEC_QUEUE + 0x0C + 8));
+        printf("[*]   r13(-32608) = 0x%08X\n", g_mem.read32(g_ctx.r[13] - 32608));
         printf("[*] Process tree populated.\n");
     }
     fflush(stdout);
@@ -1603,7 +1686,34 @@ int main(int argc, char** argv) {
                 func_802403E0(&g_ctx, &g_mem);
             }
 
-            func_800231E4(&g_ctx, &g_mem);  // fapGm_Execute
+            // ---- Per-frame dispatch (replaces fapGm_Execute) ----
+            // The original func_800231E4 → func_8003EC84 chain is blocked by
+            // the frame gate (func_8003EBD4), which always returns 0 because
+            // func_80312300 (VRetrace check) requires interrupt-driven state.
+            // We bypass the frame gate and call the dispatch sub-functions
+            // directly in the correct order.
+            {
+                extern void func_802539A4(PPCContext* ctx, Memory* mem);  // pre-frame setup
+                extern void func_8024135C(PPCContext* ctx, Memory* mem);  // descriptor init
+                extern void func_8003D314(PPCContext* ctx, Memory* mem);  // delete queue
+                extern void func_8003FF00(PPCContext* ctx, Memory* mem);  // birth queue → tree
+                extern void func_8003D150(PPCContext* ctx, Memory* mem);  // process queue
+                extern void func_8003D7E0(PPCContext* ctx, Memory* mem);  // EXECUTE dispatch
+                extern void func_802449AC(PPCContext* ctx, Memory* mem);  // frame counter
+
+                func_802539A4(&g_ctx, &g_mem);    // pre-frame setup
+                // SKIP func_8003EBD4 (frame gate) — always fails without VRetrace
+                func_8024135C(&g_ctx, &g_mem);    // descriptor processing
+                func_8003D314(&g_ctx, &g_mem);    // delete queue processing
+                func_8003FF00(&g_ctx, &g_mem);    // birth queue → tree insertion
+                func_8003D150(&g_ctx, &g_mem);    // process queue
+                g_ctx.r[3] = 0x8003E370;          // execute callback
+                func_8003D7E0(&g_ctx, &g_mem);    // LAYER EXECUTE DISPATCH
+
+
+                g_ctx.r[3] = 1;                   // frame processed
+                func_802449AC(&g_ctx, &g_mem);    // frame counter update
+            }
             func_80006264(&g_ctx, &g_mem);  // main loop cleanup
 
             frame++;
