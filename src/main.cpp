@@ -652,6 +652,8 @@ int main(int argc, char** argv) {
     });
     // PPCHalt (0x8030150C): infinite spin loop → return immediately
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
+    // OSReport (0x802CB8D0): debug printf that may write to HW console → no-op
+    g_func_table.register_func(0x802CB8D0, [](PPCContext* ctx, Memory* mem) {});
     // Scene manager execute (0x802558CC) — called per-frame via vtable.
     // Needs timing globals at r13(-26600) not yet initialized. No-op for now.
     g_func_table.register_func(0x802558CC, [](PPCContext* ctx, Memory* mem) {});
@@ -1376,15 +1378,23 @@ int main(int argc, char** argv) {
             }
 
             // Check if new creation requests were added
-            fprintf(stderr, "[FW] Post-creation-pump frame=%d\n", frame);
-            // Dump the item data to check for corruption
-            if (frame == 0) {
-                uint32_t item = 0x8041BDC0;
-                fprintf(stderr, "[FW] Item dump: +0=0x%X +4=0x%X +8=0x%X +12=0x%X +16=0x%X +20=0x%X +24=0x%X +28=0x%X\n",
-                    g_mem.read32(item+0), g_mem.read32(item+4), g_mem.read32(item+8), g_mem.read32(item+12),
-                    g_mem.read32(item+16), g_mem.read32(item+20), g_mem.read32(item+24), g_mem.read32(item+28));
+            if (frame <= 3) {
+                fprintf(stderr, "[FW] frame=%d\n", frame);
+                // Dump descriptor list entries
+                uint32_t dh = g_mem.read32(g_ctx.r[13] - 28120);
+                int di = 0;
+                while (dh != 0 && dh >= 0x80000000 && dh < 0x82000000 && di < 5) {
+                    uint16_t d0 = g_mem.read16(dh);
+                    uint16_t d2 = g_mem.read16(dh + 2);
+                    uint32_t d12 = g_mem.read32(dh + 12);
+                    uint32_t d28 = g_mem.read32(dh + 28);
+                    fprintf(stderr, "[FW]   desc[%d] @0x%X: +0=%u +2=%u +12=0x%X +28=0x%X\n",
+                            di, dh, d0, d2, d12, d28);
+                    dh = g_mem.read32(dh + 8); // next
+                    di++;
+                }
+                fflush(stderr);
             }
-            fflush(stderr);
             if (frame <= 5) {
                 const uint32_t CREATE_Q = 0x803A72C0;
                 uint32_t post_count = g_mem.read32(CREATE_Q + 44);
@@ -1395,6 +1405,15 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "[FW] Post-pump: q_count=%u q_head=0x%X tree=%u desc_head=0x%X desc_tail=0x%X\n",
                         post_count, post_head, tree_n, desc_head, desc_tail);
                 fflush(stderr);
+            }
+
+            // Call the process descriptor iterator directly to bootstrap
+            // process creation. Normally this runs from a root process in the
+            // tree, but the tree is empty (chicken-and-egg). Calling it here
+            // processes profile descriptors and creates process instances.
+            {
+                extern void func_802403E0(PPCContext* ctx, Memory* mem);
+                func_802403E0(&g_ctx, &g_mem);
             }
 
             func_800231E4(&g_ctx, &g_mem);  // fapGm_Execute
