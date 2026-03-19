@@ -117,36 +117,51 @@ static bool parse_vtx1(const uint8_t* section, uint32_t section_size, J3DModel& 
 static bool parse_shp1(const uint8_t* section, uint32_t section_size, J3DModel& model) {
     if (section_size < 0x2C) return false;
 
+    // SHP1 header layout (from J3D decomp):
+    //   +0x08: batch count (u16) + pad (u16)
+    //   +0x0C: batch data offset
+    //   +0x10: remap table offset (short[])
+    //   +0x14: always 0
+    //   +0x18: attribute descriptor offset
+    //   +0x1C: matrix table offset
+    //   +0x20: display list data offset
+    //   +0x24: matrix primitive offset
+    //   +0x28: packet location offset
     uint16_t batch_count = read16(section + 0x08);
     uint32_t batch_offset = read32(section + 0x0C);
-    // +0x10: padding
-    uint32_t attrib_offset = read32(section + 0x14);
-    uint32_t mtx_table_offset = read32(section + 0x18);
-    uint32_t dl_data_offset = read32(section + 0x1C); // display list data
-    uint32_t mtx_data_offset = read32(section + 0x20);
-    uint32_t packet_info_offset = read32(section + 0x24);
+    uint32_t attrib_offset = read32(section + 0x18);
+    uint32_t mtx_table_offset = read32(section + 0x1C);
+    uint32_t dl_data_offset = read32(section + 0x20);
+    uint32_t mtx_data_offset = read32(section + 0x24);
+    uint32_t packet_info_offset = read32(section + 0x28);
 
-    // Each batch entry: 40 bytes
+    // Each batch entry: 28 bytes
+    //   +0: matrix type (u8), +1: pad, +2: packet count (u16)
+    //   +4: attrib desc index (u16), +6: first matrix data (u16)
+    //   +8: first packet (u16), +10: pad (u16)
+    //   +12: bounding box: float[3] min, float[3] max (24 bytes)
+    // Total: 12 + 24 = 36 bytes? Some sources say 40.
+    // Using 40 to be safe (matches observed data alignment).
+    const uint32_t BATCH_ENTRY_SIZE = 40;
     for (uint16_t i = 0; i < batch_count; i++) {
-        uint32_t bo = batch_offset + i * 40;
-        if (bo + 40 > section_size) break;
+        uint32_t bo = batch_offset + i * BATCH_ENTRY_SIZE;
+        if (bo + 12 > section_size) break;
 
         ShapeBatch batch = {};
         batch.matrix_type = section[bo + 0];
-        batch.packet_count = read16(bo + section + 2);
+        batch.packet_count = read16(section + bo + 2);
         uint16_t attrib_table_offset = read16(section + bo + 4);
         uint16_t first_mtx_data = read16(section + bo + 6);
         uint16_t first_packet = read16(section + bo + 8);
-        // +10: padding (6 bytes)
-        // +16: bounding box (24 bytes: float min[3], max[3])
 
-        // Parse attribute table for this batch
+        // Parse attribute table — starts at attrib_offset, indexed by attrib_table_offset
+        // The attrib_table_offset is a BYTE offset into the attribute descriptor array
         uint32_t attr_pos = attrib_offset + attrib_table_offset;
-        while (attr_pos + 4 <= section_size) {
+        while (attr_pos + 8 <= section_size) {
             uint32_t a = read32(section + attr_pos);
-            if (a == 0xFF || (a & 0xFF) == 0xFF) break;
-            // Each entry: u32 attr, u32 data_type
             uint32_t data_type = read32(section + attr_pos + 4);
+            if (a == 0xFF || a == 0xFFFFFFFF) break;
+            if (a > 25) break; // sanity check
             ShapeBatch::AttrEntry ae;
             ae.attr = a;
             ae.data_type = data_type;
