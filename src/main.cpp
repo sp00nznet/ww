@@ -598,15 +598,57 @@ int main(int argc, char** argv) {
     }
 
     // ---- Override problematic functions ----
-    // Replace func_80022CEC — the original JKR volume search (func_802B6AB8)
-    // dereferences uninitialized pointers from the empty mount list, causing
-    // bad memory accesses. We stub it to return success and set the scene flag.
+    // Replace func_80022CEC (dScnPly_c::create) with a C implementation that
+    // calls the framework registration functions directly. The recompiled version
+    // hangs due to assertion loops and JKR mount list issues even with patches.
+    // This runs the same descriptor lifecycle: create → process → remove.
+    extern void func_802406B8(PPCContext* ctx, Memory* mem);
+    extern void func_802405BC(PPCContext* ctx, Memory* mem);
+    extern void func_8024019C(PPCContext* ctx, Memory* mem);
+    extern void func_80240098(PPCContext* ctx, Memory* mem);
     g_func_table.register_func(0x80022CEC, [](PPCContext* ctx, Memory* mem) {
-        if (mem->read32(ctx->r[13] - 30492) == 0) {
-            mem->write32(ctx->r[13] - 30492, 1);
-            fprintf(stderr, "[SCN] Scene process creation (stub)\n");
+        // Save callee-saved registers
+        uint32_t save_r30 = ctx->r[30], save_r31 = ctx->r[31];
+        uint32_t old_sp = ctx->r[1];
+
+        // Allocate PPC stack frame (64 bytes, matching original)
+        ctx->r[1] -= 64;
+        mem->write32(ctx->r[1], old_sp); // back chain
+
+        // Init process globals (safe — just clears SDA values)
+        func_802406B8(ctx, mem);
+
+        // Create layer descriptor at sp+8, register with framework
+        ctx->r[3] = ctx->r[1] + 8;
+        ctx->r[4] = 0x8033BB59; // "f_pc_profile_lst"
+        func_802405BC(ctx, mem);
+
+        ctx->r[3] = ctx->r[1] + 8;
+        func_8024019C(ctx, mem);
+
+        // Set scene created flag
+        mem->write32(ctx->r[13] - 30492, 1);
+
+        // Set descriptor vtable to process vtable
+        mem->write32(ctx->r[1] + 20, 0x80395070);
+
+        // Process and remove the descriptor
+        ctx->r[3] = ctx->r[1] + 8;
+        ctx->r[4] = 0;
+        func_80240098(ctx, mem);
+
+        // Restore stack and registers
+        ctx->r[1] = old_sp;
+        ctx->r[30] = save_r30;
+        ctx->r[31] = save_r31;
+        ctx->r[3] = 1; // success
+
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            fprintf(stderr, "[SCN] func_80022CEC: framework registration complete\n");
+            fflush(stderr);
         }
-        ctx->r[3] = 1;
     });
     // PPCHalt (0x8030150C): infinite spin loop → return immediately
     g_func_table.register_func(0x8030150C, idle_loop_replacement);
@@ -736,10 +778,21 @@ int main(int argc, char** argv) {
     printf("[*]   fapGm_Create (game framework)...\n"); fflush(stdout);
     func_80023218(&g_ctx, &g_mem);
     printf("[*]   fapGm_Create done.\n"); fflush(stdout);
+    // Watchpoint: track when creation queue item gets corrupted
+    auto dump_item = [&](const char* label) {
+        uint32_t item = g_mem.read32(0x803A72C0 + 36); // queue head
+        if (item >= 0x80000000 && item < 0x82000000) {
+            fprintf(stderr, "[WATCH] %s: item+20=0x%08X (expect 0x80022CEC)\n",
+                    label, g_mem.read32(item + 20));
+        }
+        fflush(stderr);
+    };
+    dump_item("after fapGm_Create");
 
     printf("[*]   Framework post-init (func_80022DF8)...\n"); fflush(stdout);
     func_80022DF8(&g_ctx, &g_mem);
     printf("[*] Game framework initialized.\n");
+    dump_item("after post-init");
 
     // Diagnostic: check creation queue and process tree state
     {
@@ -852,6 +905,7 @@ int main(int argc, char** argv) {
                g_mem.read32(jtable + 0 * 4));
 
         // Trigger the scene change request
+        dump_item("before scene change");
         printf("[*] Requesting scene change...\n");
         fflush(stdout);
         // Dump queue BEFORE scene change
@@ -888,6 +942,7 @@ int main(int argc, char** argv) {
 
             uint32_t buf1_addr = g_mem.read32(r13_val - 30740);  // first buffer
 
+            dump_item("before Stage.arc load");
             printf("[*] Loading Stage.arc (%u bytes) from ISO...\n", STAGE_ARC_SIZE);
 
             if (buf1_addr >= 0x80000000) {
@@ -947,6 +1002,7 @@ int main(int argc, char** argv) {
             }
 
             // Set state to 2 and invoke completion callback
+            dump_item("after Stage.arc decompress");
             printf("[*] Invoking DVD completion callback...\n");
             g_mem.write16(r13_val - 30754, 2);  // state = 2
             uint32_t dvd_q = g_mem.read32(r13_val - 26400);
@@ -958,6 +1014,7 @@ int main(int argc, char** argv) {
                     g_func_table.call(cb, &g_ctx, &g_mem);
                     int16_t new_state = (int16_t)g_mem.read16(r13_val - 30754);
                     printf("[*]   After callback: state=%d\n", new_state);
+                    dump_item("after DVD callback");
                 }
             }
         } else if (scene_state == 1) {
@@ -975,6 +1032,7 @@ int main(int argc, char** argv) {
         const uint32_t ROOM44_ARC_OFFSET = 0x51245A50;
         const uint32_t ROOM44_ARC_SIZE   = 714816;
 
+        dump_item("before Room44 load");
         printf("[*] Loading Room44.arc (%u bytes, %uKB) from ISO...\n",
                ROOM44_ARC_SIZE, ROOM44_ARC_SIZE / 1024);
 
@@ -1029,16 +1087,17 @@ int main(int argc, char** argv) {
                 }
             } else {
                 // Not Yaz0 compressed — raw RARC archive
+                // Allocate at the END of the arena to avoid overlapping game allocations.
+                // The game uses the bump allocator from the bottom up; we use the top down.
                 uint32_t room_size = (uint32_t)room_compressed.size();
-                uint32_t room_align = (g_bump_alloc_ptr + 31) & ~31;
-                if (room_align + room_size < BUMP_ALLOC_END) {
-                    uint32_t room_buf_addr = room_align;
-                    g_bump_alloc_ptr = room_align + room_size;
+                uint32_t room_buf_addr = (BUMP_ALLOC_END - room_size) & ~31;
+                if (room_buf_addr > g_bump_alloc_ptr) {
 
                     uint8_t* room_dst = g_mem.translate(room_buf_addr);
                     memcpy(room_dst, room_compressed.data(), room_size);
                     printf("[*]   Copied %u bytes (uncompressed) → 0x%08X\n",
                            room_size, room_buf_addr);
+                    dump_item("after Room44 copy to emulated RAM");
 
                     if (gcrecomp::rarc_is_archive(room_dst, room_size)) {
                         gcrecomp::RARCArchive room_archive;
@@ -1266,30 +1325,76 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Pump framework creation queue — process pending creation requests.
-            // The original game has a background thread that processes these.
-            // In our single-threaded model, we process them per-frame.
+            // Pump framework creation queue — process ONE pending request per frame.
+            // The original game has a background thread. We process one at a time
+            // to avoid infinite loops when create functions add new requests.
             {
                 const uint32_t CREATE_Q = 0x803A72C0;
                 uint32_t pending_count = g_mem.read32(CREATE_Q + 44);
                 if (pending_count > 0) {
                     uint32_t item_addr = g_mem.read32(CREATE_Q + 36);
                     uint32_t sentinel = CREATE_Q + 36;
+                    // Find the first unprocessed item
                     while (item_addr != 0 && item_addr != sentinel) {
                         uint8_t created = g_mem.read8(item_addr + 12);
                         if (created == 0) {
+                            if (frame <= 20) {
+                                uint32_t create_fn = g_mem.read32(item_addr + 20);
+                                fprintf(stderr, "[FW] BEFORE: item=0x%X fn=0x%08X +16=0x%08X +24=0x%08X\n",
+                                        item_addr, create_fn,
+                                        g_mem.read32(item_addr + 16),
+                                        g_mem.read32(item_addr + 24));
+                                fflush(stderr);
+                            }
+                            // Save/restore the item data to protect from corruption
+                            uint8_t item_backup[32];
+                            memcpy(item_backup, g_mem.translate(item_addr), 32);
+
                             g_ctx.r[3] = item_addr;
                             func_80018430(&g_ctx, &g_mem);
-                            if (frame <= 5) {
-                                fprintf(stderr, "[FW] Creation: item+12=%u item+28=0x%08X sp=0x%08X\n",
+                            if (frame <= 20) {
+                                // Check if item was corrupted
+                                bool corrupted = memcmp(item_backup + 16, g_mem.translate(item_addr) + 16, 8) != 0;
+                                fprintf(stderr, "[FW] AFTER: item+12=%u item+28=0x%08X +20=0x%08X sp=0x%08X %s\n",
                                         g_mem.read8(item_addr + 12),
                                         g_mem.read32(item_addr + 28),
-                                        g_ctx.r[1]);
+                                        g_mem.read32(item_addr + 20),
+                                        g_ctx.r[1],
+                                        corrupted ? "CORRUPTED!" : "ok");
+                                if (corrupted) {
+                                    // Restore vtable and create_fn, keep result
+                                    memcpy(g_mem.translate(item_addr) + 16, item_backup + 16, 8);
+                                    fprintf(stderr, "[FW] Restored item+16/+20 from backup\n");
+                                }
+                                fflush(stderr);
                             }
+                            break; // Only one per frame
                         }
                         item_addr = g_mem.read32(item_addr + 4);
                     }
                 }
+            }
+
+            // Check if new creation requests were added
+            fprintf(stderr, "[FW] Post-creation-pump frame=%d\n", frame);
+            // Dump the item data to check for corruption
+            if (frame == 0) {
+                uint32_t item = 0x8041BDC0;
+                fprintf(stderr, "[FW] Item dump: +0=0x%X +4=0x%X +8=0x%X +12=0x%X +16=0x%X +20=0x%X +24=0x%X +28=0x%X\n",
+                    g_mem.read32(item+0), g_mem.read32(item+4), g_mem.read32(item+8), g_mem.read32(item+12),
+                    g_mem.read32(item+16), g_mem.read32(item+20), g_mem.read32(item+24), g_mem.read32(item+28));
+            }
+            fflush(stderr);
+            if (frame <= 5) {
+                const uint32_t CREATE_Q = 0x803A72C0;
+                uint32_t post_count = g_mem.read32(CREATE_Q + 44);
+                uint32_t post_head = g_mem.read32(CREATE_Q + 36);
+                uint32_t tree_n = g_mem.read32(0x803726A0 + 8);
+                uint32_t desc_head = g_mem.read32(g_ctx.r[13] - 28120);
+                uint32_t desc_tail = g_mem.read32(g_ctx.r[13] - 28116);
+                fprintf(stderr, "[FW] Post-pump: q_count=%u q_head=0x%X tree=%u desc_head=0x%X desc_tail=0x%X\n",
+                        post_count, post_head, tree_n, desc_head, desc_tail);
+                fflush(stderr);
             }
 
             func_800231E4(&g_ctx, &g_mem);  // fapGm_Execute
