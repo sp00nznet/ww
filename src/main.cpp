@@ -47,7 +47,9 @@ static j3d::J3DModel g_room_model;
 static const uint8_t* g_room_bdl_data = nullptr;
 static uint32_t g_room_bdl_size = 0;
 static bool g_room_model_loaded = false;
+static bool g_textures_loaded = false;
 static float g_camera_angle = 0.0f;
+static gcrecomp::gx::GXTexObj g_tex_objs[8] = {}; // up to 8 textures
 
 // Forward declarations for recompiled functions
 extern void func_8030CFB0(PPCContext* ctx, Memory* mem);  // Small init helper
@@ -1135,10 +1137,12 @@ int main(int argc, char** argv) {
         if (g_room_model_loaded && !g_room_model.vertex_arrays.empty()) {
             using namespace gcrecomp::gx;
 
-            // Find position vertex array
+            // Find vertex arrays
             const j3d::VertexArray* pos_array = nullptr;
+            const j3d::VertexArray* tc_array = nullptr;
             for (const auto& va : g_room_model.vertex_arrays) {
-                if (va.attr == j3d::GX_VA_POS) { pos_array = &va; break; }
+                if (va.attr == j3d::GX_VA_POS) pos_array = &va;
+                if (va.attr == j3d::GX_VA_TEX0) tc_array = &va;
             }
 
             if (pos_array && pos_array->count > 0 && pos_array->comp_type == 4 /*f32*/) {
@@ -1183,22 +1187,54 @@ int main(int argc, char** argv) {
 
                 GXSetViewport(0, 0, 1280, 720, 0.0f, 1.0f);
 
-                // Simple TEV: output = vertex color (white) with no texture
-                GXSetNumTevStages(1);
-                GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_RASC);
-                GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
-                GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
-                GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
-                GXSetTevOrder(GX_TEVSTAGE0, 0xFF, 0xFF, 0); // no texcoord, no texture, color0
+                // Load textures once
+                if (!g_textures_loaded && !g_room_model.textures.empty()) {
+                    g_textures_loaded = true;
+                    uint32_t ntex = std::min((uint32_t)g_room_model.textures.size(), 8u);
+                    for (uint32_t t = 0; t < ntex; t++) {
+                        const auto& th = g_room_model.textures[t];
+                        if (th.image_data && th.width > 0 && th.height > 0) {
+                            GXInitTexObj(&g_tex_objs[t], th.image_data,
+                                        th.width, th.height,
+                                        (GXTexFmt)th.format,
+                                        th.wrap_s, th.wrap_t, th.mipmap_count > 1);
+                            printf("[GFX] Loaded texture %u: %s %ux%u fmt=%u\n",
+                                   t, th.name.c_str(), th.width, th.height, th.format);
+                        }
+                    }
+                }
+
+                // TEV: modulate texture with vertex color
+                // Stage 0: output = TEXC * RASC (texture color * vertex color)
+                if (g_textures_loaded) {
+                    GXLoadTexObj(&g_tex_objs[0], 0); // bind texture 0 to map 0
+                    GXSetNumTevStages(1);
+                    GXSetTevOrder(GX_TEVSTAGE0, 0, 0, 0); // texcoord0, texmap0, color0
+                    GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_TEXC, GX_CC_RASC, GX_CC_ZERO);
+                    GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+                    GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_TEXA);
+                    GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+                } else {
+                    // Fallback: vertex color only
+                    GXSetNumTevStages(1);
+                    GXSetTevOrder(GX_TEVSTAGE0, 0xFF, 0xFF, 0);
+                    GXSetTevColorIn(GX_TEVSTAGE0, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_RASC);
+                    GXSetTevColorOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+                    GXSetTevAlphaIn(GX_TEVSTAGE0, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_RASA);
+                    GXSetTevAlphaOp(GX_TEVSTAGE0, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, true, 0);
+                }
 
                 GXSetBlendMode(GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, 0);
                 GXSetZMode(true, GX_LEQUAL, true);
                 GXSetCullMode(GX_CULL_NONE);
 
-                // Vertex format: direct position + direct color
+                // Vertex format: direct position + direct color + direct texcoord
                 GXClearVtxDesc();
                 GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
                 GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+                if (tc_array && g_textures_loaded) {
+                    GXSetVtxDesc(GX_VA_TEX0, GX_DIRECT);
+                }
 
                 // Render room geometry using indexed display lists from SHP1.
                 // Each shape batch contains triangle strips/fans with 16-bit
@@ -1235,11 +1271,17 @@ int main(int argc, char** argv) {
                             if (vert_count == 0 || dp + vert_count * bpv > dl_end) break;
 
                             // Collect triangle strip/fan vertices into a flat list
-                            struct Vtx { float x, y, z; uint8_t r, g, b; };
+                            struct Vtx { float x, y, z; uint8_t r, g, b; float s, t; };
                             std::vector<Vtx> verts(vert_count);
 
+                            uint32_t tc_count = tc_array ? tc_array->count : 0;
+                            const uint8_t* tc_data = tc_array ? tc_array->data : nullptr;
+                            uint32_t tc_stride = tc_array ? tc_array->stride : 0;
+                            uint32_t tc_type = tc_array ? tc_array->comp_type : 0;
+                            uint32_t tc_frac = tc_array ? tc_array->frac_bits : 0;
+
                             for (uint16_t v = 0; v < vert_count; v++) {
-                                uint16_t pos_idx = 0;
+                                uint16_t pos_idx = 0, tc_idx = 0;
                                 for (const auto& a : shape.attribs) {
                                     uint16_t idx = 0;
                                     if (a.data_type == 2) { idx = dl[dp]; dp += 1; }
@@ -1247,13 +1289,23 @@ int main(int argc, char** argv) {
                                     else if (a.data_type == 1) { dp += 1; continue; }
                                     else continue;
                                     if (a.attr == 9) pos_idx = idx; // GX_VA_POS
+                                    if (a.attr == 13) tc_idx = idx; // GX_VA_TEX0
                                 }
                                 if (pos_idx < pos_count) {
                                     verts[v].x = j3d::readf32(pos_data + pos_idx * 12 + 0);
                                     verts[v].y = j3d::readf32(pos_data + pos_idx * 12 + 4);
                                     verts[v].z = j3d::readf32(pos_data + pos_idx * 12 + 8);
                                 } else {
-                                    verts[v] = {0, 0, 0, 128, 128, 128};
+                                    verts[v] = {0,0,0, 128,128,128, 0,0};
+                                }
+                                // Texcoord lookup (s16 with frac_bits)
+                                if (tc_data && tc_idx < tc_count && tc_stride >= 4 && tc_type == 3 /*s16*/) {
+                                    float scale = 1.0f / (float)(1 << tc_frac);
+                                    const uint8_t* tcp = tc_data + tc_idx * tc_stride;
+                                    verts[v].s = (float)j3d::reads16(tcp + 0) * scale;
+                                    verts[v].t = (float)j3d::reads16(tcp + 2) * scale;
+                                } else {
+                                    verts[v].s = 0; verts[v].t = 0;
                                 }
                                 int yi = (int)(verts[v].y * 0.1f);
                                 verts[v].r = (uint8_t)std::min(255, std::max(0, 80 + yi));
@@ -1282,9 +1334,12 @@ int main(int argc, char** argv) {
                                 uint32_t tc = (uint32_t)tris.size();
                                 if (tc > 60000) tc = 60000;
                                 GXBegin(GX_TRIANGLES, 0, tc);
-                                for (uint32_t t = 0; t < tc; t++) {
-                                    GXPosition3f32(tris[t].x, tris[t].y, tris[t].z);
-                                    GXColor4u8(tris[t].r, tris[t].g, tris[t].b, 255);
+                                for (uint32_t ti = 0; ti < tc; ti++) {
+                                    GXPosition3f32(tris[ti].x, tris[ti].y, tris[ti].z);
+                                    GXColor4u8(tris[ti].r, tris[ti].g, tris[ti].b, 255);
+                                    if (tc_array && g_textures_loaded) {
+                                        GXTexCoord2f32(tris[ti].s, tris[ti].t);
+                                    }
                                     GXSubmitVertex();
                                 }
                                 GXEnd();

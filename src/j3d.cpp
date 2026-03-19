@@ -189,9 +189,28 @@ static bool parse_shp1(const uint8_t* section, uint32_t section_size, J3DModel& 
     return true;
 }
 
+// Calculate texture image size in bytes from format and dimensions
+static uint32_t calc_tex_image_size(uint8_t format, uint16_t width, uint16_t height) {
+    // Textures are stored in tiles. Each format has a tile size and bits per pixel.
+    switch (format) {
+        case 0x0: return (width * height) / 2;      // I4: 4bpp
+        case 0x1: return width * height;              // I8: 8bpp
+        case 0x2: return width * height;              // IA4: 8bpp
+        case 0x3: return width * height * 2;          // IA8: 16bpp
+        case 0x4: return width * height * 2;          // RGB565: 16bpp
+        case 0x5: return width * height * 2;          // RGB5A3: 16bpp
+        case 0x6: return width * height * 4;          // RGBA8: 32bpp
+        case 0x8: return (width * height) / 2;        // CI4: 4bpp
+        case 0x9: return width * height;              // CI8: 8bpp
+        case 0xA: return width * height * 2;          // CI14x2: 16bpp
+        case 0xE: return (width * height) / 2;        // CMPR: 4bpp (DXT1)
+        default:  return width * height;
+    }
+}
+
 // Parse TEX1 section — texture headers
 static bool parse_tex1(const uint8_t* section, uint32_t section_size, J3DModel& model) {
-    if (section_size < 0x10) return false;
+    if (section_size < 0x14) return false;
 
     uint16_t tex_count = read16(section + 0x08);
     uint32_t header_offset = read32(section + 0x0C);
@@ -201,8 +220,6 @@ static bool parse_tex1(const uint8_t* section, uint32_t section_size, J3DModel& 
     std::vector<std::string> names;
     if (string_table_offset < section_size) {
         uint16_t str_count = read16(section + string_table_offset);
-        // +2: padding
-        // Then str_count entries: u16 hash, u16 offset
         for (uint16_t i = 0; i < str_count; i++) {
             uint32_t entry_off = string_table_offset + 4 + i * 4;
             if (entry_off + 4 > section_size) break;
@@ -217,30 +234,37 @@ static bool parse_tex1(const uint8_t* section, uint32_t section_size, J3DModel& 
     }
 
     // Each texture header: 32 bytes
+    // +0: format (u8), +1: alpha (u8), +2: width (u16), +4: height (u16)
+    // +6: wrap_s (u8), +7: wrap_t (u8), +8: palette_format (u8)
+    // +9: palette_count (u16 BE but misaligned), +11: palette_offset (u32)
+    // +15: min_filter, +16: mag_filter (approximate positions)
+    // +24: mipmap_count (u8)
+    // +28: image_data_offset (u32, relative to this header entry)
     for (uint16_t i = 0; i < tex_count; i++) {
         uint32_t to = header_offset + i * 32;
         if (to + 32 > section_size) break;
 
         TextureHeader tex = {};
         tex.format = section[to + 0];
-        // +1: alpha flag
         tex.width  = read16(section + to + 2);
         tex.height = read16(section + to + 4);
         tex.wrap_s = section[to + 6];
         tex.wrap_t = section[to + 7];
-        // +8: palette format
-        // +9: palette count (u16)
-        // +12: palette offset (u32)
-        tex.min_filter = section[to + 14]; // actually at different offset
-        tex.mag_filter = section[to + 15];
-        // +16: min LOD, max LOD
-        tex.mipmap_count = section[to + 18];
-        // +20: image data offset (relative to texture header start)
+        tex.min_filter = 1; // linear
+        tex.mag_filter = 1; // linear
+        tex.mipmap_count = section[to + 24];
+
+        // Image data offset is relative to this texture header entry
         uint32_t img_offset = read32(section + to + 28);
-        tex.image_data = section + to + img_offset;
-        // Estimate image size from format and dimensions
-        // For now just store a rough estimate
-        tex.image_size = tex.width * tex.height; // approximate
+        uint32_t abs_img_off = to + img_offset;
+        if (abs_img_off < section_size) {
+            tex.image_data = section + abs_img_off;
+            tex.image_size = calc_tex_image_size(tex.format, tex.width, tex.height);
+            // Clamp to section bounds
+            if (abs_img_off + tex.image_size > section_size) {
+                tex.image_size = section_size - abs_img_off;
+            }
+        }
 
         if (i < names.size()) {
             tex.name = names[i];
