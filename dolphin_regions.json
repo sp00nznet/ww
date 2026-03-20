@@ -1,0 +1,30 @@
+{
+  "regions": {
+    "game_info": {
+      "addr": "0x803C4BF8",
+      "size": 24576
+    },
+    "scene_info": {
+      "addr": "0x803E4AB4",
+      "size": 4096
+    },
+    "sda_globals": {
+      "addr": "0x803F60E0",
+      "size": 6768
+    },
+    "framework_state": {
+      "addr": "0x803B9900",
+      "size": 1536
+    },
+    "profile_descs": {
+      "addr": "0x80389000",
+      "size": 53248
+    },
+    "root_layer": {
+      "addr": "0x80371500",
+      "size": 8192
+    }
+  },
+  "r13": "0x803FE0E0",
+  "scene_state": 0
+}
