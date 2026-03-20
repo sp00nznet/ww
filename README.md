@@ -1,19 +1,5 @@
 # The Wind Waker - Static Recompilation
 
-```
-  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-      _____ _          __      ___           _
-     |_   _| |_  ___  \ \    / (_)_ _  __| |
-       | | | ' \/ -_)  \ \/\/ /| | ' \/ _` |
-       |_| |_||_\___|  _\_/\_/ |_|_||_\__,_|
-         \ \    / /_ _| |_____ _ _
-          \ \/\/ / _` | / / -_) '_|
-           \_/\_/\__,_|_\_\___|_|
-
-       No emulator. Just the wind at your back.
-  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-```
-
 **A static recompilation of a GameCube game to native PC.**
 
 This project takes *The Legend of Zelda: The Wind Waker* (GameCube, 2002) and
@@ -289,25 +275,48 @@ RARO (1)    RARC override
 | Memory allocation | Working — bump allocator replaces JKR heap |
 | Time Base (TB) register | Working — host QueryPerformanceCounter scaled to 40.5MHz |
 
+### Framework Process System
+
+The game's multi-threaded framework (fopMsgM/fapGm) is now operational:
+
+- **9 processes dispatching every frame** — root layer (0x0007), scene (0x0015),
+  room manager (0x0017), environment (0x0028), camera (0x00A9), 3 scene sub-processes
+  (0x01B5/0x01BA/0x01BB), and timing controller (0x01BC)
+- **Both execute and draw phases run** — fn_table[2] and fn_table[3] dispatched via
+  3-level callback chain through the per-frame layer iteration
+- **Frame gate bypassed** — VRetrace check always returns 0 without interrupts;
+  we call dispatch sub-functions directly, skipping the gate
+- **Execution queue populated** — process nodes at +0x34 linked into 0x803BCD60,
+  with 16 priority lists iterated by func_802450D0
+- **Dolphin reference state loaded** — 1170 global values from game info/SDA globals
+  plus 831 scalar template values across 8 process types captured during Dolphin gameplay
+- Scene state = 0 (active), matching Dolphin runtime
+
+Process execute methods run but don't yet modify game state because process objects
+lack internal pointer state (set during construction, which is stubbed due to JKR
+archive dependencies).
+
 ### Current Focus
 
-The rendering pipeline is **end-to-end functional**: ISO → Yaz0 → RARC → BDL → J3D parse
-→ indexed display lists → GX vertex submit → TEV shader → D3D11 draw → pixels at 60fps.
-Both the island terrain and ocean water models render with decoded CMPR/I4 textures and
-per-batch material assignment.
+Two systems are end-to-end functional:
 
-The framework process tree remains empty (bypassed). Wind Waker's multi-threaded process
-system is too deeply integrated with JKR archive mounting and background thread creation
-to emulate directly. Scene rendering is driven from the main loop instead.
+1. **Rendering**: ISO → Yaz0 → RARC → BDL → J3D parse → GX → D3D11 → 60fps
+2. **Framework dispatch**: fapGm per-frame → layer iteration → per-process execute+draw
+
+The main blocker is the **process creation chain**: the original create functions
+(e.g., func_80022CEC) depend on JKR archive mounting, which requires a background
+thread and properly initialized heap system. Process objects are constructed with
+correct headers and scalar state from Dolphin captures, but lack the internal
+pointer state that the real create functions would initialize.
 
 ### Next Steps
 
-- **MAT3 material parsing**: Full TEV stage configuration from materials (multi-texture, lighting)
-- **Proper normals**: Use VTX1 normal data for basic directional lighting
-- **Skybox rendering**: Render vr_sky.bdl and vr_uso_umi.bdl behind the island
-- **Collision mesh**: Parse room.dzb for room boundaries
-- **Room actors**: Parse room.dzr for object placements (ACTR data)
-- **Multiple rooms**: Load and render adjacent sea grid rooms
+- **Fix process creation** — make create functions work without JKR, or implement
+  a JKR archive mounting system that satisfies the creation chain
+- **Connect game camera** — the camera process has 610 values from Dolphin including
+  position/FOV; use these to replace the hardcoded orbiting camera
+- **Actor spawning** — parse room.dzr actor placements and create actor processes
+- **MAT3 material parsing** — full TEV stage configuration from J3D materials
 
 ## Standing on the Shoulders of Giants
 
