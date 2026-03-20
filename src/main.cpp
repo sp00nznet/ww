@@ -672,14 +672,13 @@ int main(int argc, char** argv) {
         fflush(stderr);
     });
     // Per-process execute callback (via CALL_INDIRECT from layer iterator).
-    // Logs dispatch to verify processes are being reached each frame.
     g_func_table.register_func(0x80040198, [](PPCContext* ctx, Memory* mem) {
         static int trace_count = 0;
         uint32_t node = ctx->r[3];
         uint32_t proc_base = (node >= 0x80000000) ? mem->read32(node + 12) : 0;
         if (trace_count < 10) {
             uint32_t profile = (proc_base >= 0x80000000) ? mem->read32(proc_base + 8) >> 16 : 0;
-            fprintf(stderr, "[EXEC] process=0x%08X profile=0x%04X dispatched\n", proc_base, profile);
+            fprintf(stderr, "[EXEC] proc=0x%08X profile=0x%04X\n", proc_base, profile);
             fflush(stderr);
         }
         trace_count++;
@@ -714,6 +713,29 @@ int main(int argc, char** argv) {
     // Needs timing globals at r13(-26600) not yet initialized. No-op for now.
     g_func_table.register_func(0x802558CC, [](PPCContext* ctx, Memory* mem) {});
     // func_8000AF2C (mDoGph_gInf_c execute) — the scene manager's per-frame
+    // Trace: actual profile-specific execute methods (called via CALL_INDIRECT)
+    // Scene: 0x801948B4 (dScnPly_c::execute), Actor: 0x8015D87C (env execute)
+    g_func_table.register_func(0x801948B4, [](PPCContext* ctx, Memory* mem) {
+        static int count = 0;
+        if (count < 5) {
+            uint32_t proc = ctx->r[3];
+            uint32_t profile = (proc >= 0x80000000) ? mem->read32(proc + 8) >> 16 : 0;
+            fprintf(stderr, "[SCN-METHOD] 0x801948B4 called, proc=0x%08X profile=0x%04X\n",
+                    proc, profile);
+            // Check scene loading state
+            int16_t ss = (int16_t)mem->read16(ctx->r[13] - 30754);
+            fprintf(stderr, "  scene_state=%d\n", ss);
+            fflush(stderr);
+        }
+        count++;
+        extern void func_801948B4(PPCContext* ctx, Memory* mem);
+        func_801948B4(ctx, mem);
+        if (count <= 5) {
+            int16_t ss_after = (int16_t)mem->read16(ctx->r[13] - 30754);
+            fprintf(stderr, "  scene_state after=%d\n", ss_after);
+            fflush(stderr);
+        }
+    });
     // dispatch. Phase 1 does scene state management (copies, vtable call, frame
     // swap). Phase 2 does camera/rendering setup that hangs without GX init.
     // We replace with Phase 1 only.
@@ -1134,7 +1156,8 @@ int main(int argc, char** argv) {
             g_mem.write32(proc + 0x74, proc);
             // Dispatch
             g_mem.write32(proc + 0x90, 0x8003FD40);           // dispatch function
-            g_mem.write32(proc + 0xA8, fn_table);             // function table
+            g_mem.write32(proc + 0xA8, fn_table);             // function table 1 (from desc+0x0C)
+            g_mem.write32(proc + 0xB8, g_mem.read32(desc_ptr + 0x1C)); // function table 2 (from desc+0x1C)
             // Profile-specific fields from descriptor
             g_mem.write32(proc + 0x98, g_mem.read32(desc_ptr + 0));   // priority base
             g_mem.write32(proc + 0x9C, g_mem.read32(desc_ptr + 4));   // parent priority
