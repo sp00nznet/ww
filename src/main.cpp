@@ -1174,13 +1174,75 @@ int main(int argc, char** argv) {
             {0x01BC, 0x2E0,  0x80389D80, 0x803726E8},
         };
 
+        // Map profile → allocated address for template loading
+        std::vector<std::pair<uint16_t, uint32_t>> proc_addrs;
         for (const auto& tmpl : essential_procs) {
             uint32_t proc = create_process(tmpl.profile, tmpl.size, tmpl.desc_ptr,
                                            tmpl.fn_table, sublayer1);
             if (proc) {
+                proc_addrs.push_back({tmpl.profile, proc});
                 printf("[*]   Process 0x%04X at 0x%08X (%u bytes)\n",
                        tmpl.profile, proc, tmpl.size);
             }
+        }
+
+        // --- Load process object templates from Dolphin captures ---
+        // Each dolphin_proc_XXXX.bin contains the runtime state of a process
+        // object from Dolphin. We copy scalar (non-pointer) fields to provide
+        // internal state that the execute methods depend on.
+        // Skip: header fields (+0x00 to +0xBF already set), heap pointers,
+        // and self-referential pointers.
+        auto load_proc_template = [](Memory* mem, uint32_t proc_addr, uint32_t proc_size,
+                                     const char* filename) -> int {
+            FILE* f = fopen(filename, "rb");
+            if (!f) return 0;
+            std::vector<uint8_t> data(proc_size);
+            size_t n = fread(data.data(), 1, proc_size, f);
+            fclose(f);
+            if (n < proc_size) return 0;
+
+            int copied = 0;
+            // Start from +0xBC (after header/dispatch fields we already set)
+            // For the first 0xBC bytes, only copy fields we DIDN'T set
+            for (size_t off = 0; off + 3 < proc_size; off += 4) {
+                uint32_t val = (data[off] << 24) | (data[off+1] << 16) |
+                               (data[off+2] << 8) | data[off+3];
+                if (val == 0) continue;
+                // Skip ALL pointer-like values (0x80000000-0x81FFFFFF)
+                // These reference Dolphin's memory layout, not ours
+                if (val >= 0x80000000 && val < 0x82000000) continue;
+                // Skip magic/state markers
+                if ((val & 0xFFFF0000) == 0x09130000) continue;
+                // Skip header fields we already set
+                if (off < 0x14) continue;
+                // Don't overwrite values we already set
+                uint32_t existing = mem->read32(proc_addr + (uint32_t)off);
+                if (existing != 0) continue;
+
+                mem->write32(proc_addr + (uint32_t)off, val);
+                copied++;
+            }
+            return copied;
+        };
+
+        // Load templates for all essential processes
+        for (const auto& [profile, addr] : proc_addrs) {
+            char fname[64];
+            snprintf(fname, sizeof(fname), "dolphin_proc_%04X.bin", profile);
+            uint32_t size = 0;
+            for (const auto& t : essential_procs)
+                if (t.profile == profile) { size = t.size; break; }
+            int n = load_proc_template(&g_mem, addr, size, fname);
+            if (n > 0) {
+                printf("[*]   Template 0x%04X: %d values loaded\n", profile, n);
+            }
+        }
+        // Also load templates for root and scene processes
+        {
+            int n1 = load_proc_template(&g_mem, root_proc, ROOT_PROC_SIZE, "dolphin_proc_0007.bin");
+            int n2 = load_proc_template(&g_mem, scene_proc, SCENE_PROC_SIZE, "dolphin_proc_0015.bin");
+            if (n1) printf("[*]   Template 0x0007 (root): %d values loaded\n", n1);
+            if (n2) printf("[*]   Template 0x0015 (scene): %d values loaded\n", n2);
         }
 
         // Set r13(-32608) = exec queue base, r13(-32604) = number of lists
