@@ -676,7 +676,7 @@ int main(int argc, char** argv) {
         static int trace_count = 0;
         uint32_t node = ctx->r[3];
         uint32_t proc_base = (node >= 0x80000000) ? mem->read32(node + 12) : 0;
-        if (trace_count < 10) {
+        if (trace_count < 30) {
             uint32_t profile = (proc_base >= 0x80000000) ? mem->read32(proc_base + 8) >> 16 : 0;
             fprintf(stderr, "[EXEC] proc=0x%08X profile=0x%04X\n", proc_base, profile);
             fflush(stderr);
@@ -1627,9 +1627,80 @@ int main(int argc, char** argv) {
         fflush(stdout);
     }
 
-    // ---- Set scene to active state ----
-    // The loading pipeline leaves scene_state = -1 (loaded). In Dolphin during
-    // gameplay, this is 0 (active/running). Set it now, after all loading.
+    // ---- Load Dolphin reference state into game memory ----
+    // The scene state machine and process execute methods read from large BSS
+    // structures that are zeroed in our recomp but have meaningful state in the
+    // real game. We load captured state from Dolphin binary dumps to provide
+    // the expected runtime context.
+    {
+        struct RegionLoad {
+            const char* filename;
+            uint32_t addr;
+            uint32_t size;
+            bool skip_heap_ptrs;  // If true, don't copy values that look like heap pointers
+        };
+        const RegionLoad loads[] = {
+            // Game info (dComIfG_gameInfo) — scene state, event flags, stage data
+            {"dolphin_game_info.bin", 0x803C4BF8, 0x6000, true},
+            // Scene/environment runtime info
+            {"dolphin_scene_info.bin", 0x803E4AB4, 0x1000, true},
+            // SDA globals — framework state, timing, counters
+            {"dolphin_sda_globals.bin", 0x803F60E0, 0x1A70, true},
+        };
+
+        int total_loaded = 0;
+        for (const auto& load : loads) {
+            FILE* f = fopen(load.filename, "rb");
+            if (!f) {
+                printf("[*] Dolphin state %s not found (skipping)\n", load.filename);
+                continue;
+            }
+            fseek(f, 0, SEEK_END);
+            size_t fsize = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            size_t to_read = (fsize < load.size) ? fsize : load.size;
+
+            std::vector<uint8_t> data(to_read);
+            fread(data.data(), 1, to_read, f);
+            fclose(f);
+
+            // Copy to emulated memory, optionally skipping heap pointers
+            uint8_t* dst = g_mem.translate(load.addr);
+            int copied = 0, skipped = 0;
+            for (size_t off = 0; off + 3 < to_read; off += 4) {
+                uint32_t val = (data[off] << 24) | (data[off+1] << 16) |
+                               (data[off+2] << 8) | data[off+3];
+                if (val == 0) continue;  // Skip zeros (already zeroed)
+
+                // Skip heap pointers (0x80400000+) — they point to Dolphin's
+                // allocations, not ours
+                if (load.skip_heap_ptrs && val >= 0x80400000 && val < 0x81800000) {
+                    skipped++;
+                    continue;
+                }
+
+                // Don't overwrite values we specifically set (exec queue, heaps, etc.)
+                uint32_t target_addr = load.addr + (uint32_t)off;
+                uint32_t existing = g_mem.read32(target_addr);
+                if (existing != 0) {
+                    skipped++;
+                    continue;  // Don't overwrite our initialized values
+                }
+
+                dst[off+0] = data[off+0];
+                dst[off+1] = data[off+1];
+                dst[off+2] = data[off+2];
+                dst[off+3] = data[off+3];
+                copied++;
+            }
+            printf("[*] Loaded %s: %d values copied, %d skipped\n",
+                   load.filename, copied, skipped);
+            total_loaded += copied;
+        }
+        printf("[*] Dolphin state loaded: %d total values\n", total_loaded);
+    }
+
+    // Set scene loading state to 0 (active/running)
     g_mem.write16(g_ctx.r[13] - 30754, 0);
     printf("[*] Scene state set to 0 (active).\n");
 
