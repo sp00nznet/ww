@@ -821,18 +821,49 @@ int main(int argc, char** argv) {
     //   BUT: mDoGph_Create also creates the scene manager object. We create it manually.
     // Skip mDoRst_Create (0x80007A70) — reset controller, might need HW
 
-    // ---- Create scene manager manually ----
-    // mDoGph_Create normally creates this via func_80255354 → func_8025527C,
-    // but those functions depend on GX/camera init which we skip. We create the
-    // minimal object directly. The per-frame execute (func_802558CC) is no-op'd.
+    // ---- Create scene manager and timing structure manually ----
+    // mDoGph_Create normally creates these, but depends on GX/camera init.
     {
+        // Scene manager
         uint32_t mgr_addr = 0x817FFA00;
         memset(g_mem.translate(mgr_addr), 0, 64);
         g_mem.write32(mgr_addr + 0, 0x80395C20);    // vtable
         g_mem.write32(mgr_addr + 12, 0xFFFFFFFF);   // uninitialized sentinel
-        g_mem.write32(mgr_addr + 28, 1);             // init flag (set by func_80007BBC)
+        g_mem.write32(mgr_addr + 28, 1);             // init flag
         g_mem.write32(g_ctx.r[13] - 27984, mgr_addr);
         printf("[*]   Scene manager at 0x%08X\n", mgr_addr);
+
+        // Timing/display structure (from Dolphin capture at 0x805F4EC0)
+        // Contains screen dimensions, frame state, and vtable pointer.
+        // The scene manager stores a pointer to this at +4, and process
+        // dispatch reads it via r13(-30792).
+        uint32_t timing_addr = 0x817FF900;
+        memset(g_mem.translate(timing_addr), 0, 64);
+        g_mem.write32(timing_addr + 0x00, 0x8039D578);   // vtable (DOL data)
+        g_mem.write32(timing_addr + 0x04, 0x00000001);   // frame state
+        g_mem.write32(timing_addr + 0x08, 0x001A001A);   // ticks per frame (26, 26)
+        // Float: 640.0 (GC render width)
+        { float f = 640.0f; uint32_t v; memcpy(&v, &f, 4);
+          g_mem.write32(timing_addr + 0x18, (v >> 24) | ((v >> 8) & 0xFF00) |
+                        ((v << 8) & 0xFF0000) | (v << 24)); }
+        // Actually, memory is big-endian. write32 handles this.
+        // 640.0 in big-endian = 0x44200000
+        g_mem.write32(timing_addr + 0x18, 0x44200000);   // 640.0 (width)
+        g_mem.write32(timing_addr + 0x1C, 0x43F00000);   // 480.0 (height)
+        g_mem.write32(timing_addr + 0x20, 0xFFFFFFFF);   // mask
+
+        // Point r13(-30792) to timing structure
+        g_mem.write32(g_ctx.r[13] - 30792, timing_addr);
+        // Also set scene_mgr+4 to point to it
+        g_mem.write32(mgr_addr + 4, timing_addr);
+
+        // Set timing-related SDA globals that reference our structures
+        // (These were heap pointers in Dolphin, skipped during bulk load)
+        g_mem.write32(g_ctx.r[13] - 26600, timing_addr + 0x40);  // timing obj
+        // r13(-32592) = timing source for per-process dispatch
+        // In Dolphin this is 0xFFFFFFFF — already loaded from Dolphin SDA dump
+
+        printf("[*]   Timing structure at 0x%08X (640x480, vtable=0x8039D578)\n", timing_addr);
     }
 
     printf("[*]   fapGm_Create (game framework)...\n"); fflush(stdout);
@@ -1951,6 +1982,12 @@ int main(int argc, char** argv) {
                 g_ctx.r[3] = 0x8003E370;          // execute callback
                 func_8003D7E0(&g_ctx, &g_mem);    // LAYER EXECUTE DISPATCH
 
+                // Draw phase — calls fn_table[3] for each process
+                // 0x8003E390 calls func_8003D51C which dispatches via fn_table[3]
+                extern void func_800404CC(PPCContext* ctx, Memory* mem);  // GX draw-done
+                g_ctx.r[3] = 0x8003E390;          // draw callback
+                func_8003D7E0(&g_ctx, &g_mem);    // LAYER DRAW DISPATCH
+                func_800404CC(&g_ctx, &g_mem);     // GX draw-done sync
 
                 g_ctx.r[3] = 1;                   // frame processed
                 func_802449AC(&g_ctx, &g_mem);    // frame counter update
@@ -1960,17 +1997,22 @@ int main(int argc, char** argv) {
             frame++;
             if (frame <= 10 || frame % 60 == 0) {
                 int16_t ss = (int16_t)g_mem.read16(g_ctx.r[13] - 30754);
-                uint32_t dq = g_mem.read32(g_ctx.r[13] - 26400);
-                uint8_t scene_flag = g_mem.read8(0x803CA701);
-                // Sublayer process counts (real process location, not flat tree)
-                uint32_t sl0_count = g_mem.read32(0x803BCE20 + 0x40);  // sublayer 0 listA
-                // Scene manager at r13(-27984)
-                uint32_t scene_mgr = g_mem.read32(g_ctx.r[13] - 27984);
-                // Root sublayer list count
-                uint32_t sl_count = g_mem.read32(0x803726E4);
-                fprintf(stderr, "[*] Frame %d (state=%d dvdq=0x%X flag=0x%X sl0=%u sublayers=%u scnmgr=0x%X)\n",
-                        frame, ss, dq, scene_flag,
-                        sl0_count, sl_count, scene_mgr);
+                // Check game info values that change during gameplay
+                uint32_t gi = 0x803E4AB4;
+                uint32_t gi_counter = g_mem.read32(gi + 2496);
+                uint8_t gi_3210 = g_mem.read8(gi + 3210);
+                uint8_t gi_3215 = g_mem.read8(gi + 3215);
+                uint8_t gi_3216 = g_mem.read8(gi + 3216);
+                // Check if any process internal state changed from initial
+                // (environment process at 0x804003E0)
+                uint32_t env_val = g_mem.read32(0x804003E0 + 0x100);
+                // Timing state
+                uint32_t time_val = g_mem.read32(0x80405EC0 + 0x100);
+                // SDA frame counter at r13(-30792)
+                uint32_t frame_ctr = g_mem.read32(g_ctx.r[13] - 30792);
+                fprintf(stderr, "[*] Frame %d (state=%d cnt=%u f=%u/%u/%u env=0x%X tm=0x%X fc=0x%X)\n",
+                        frame, ss, gi_counter, gi_3210, gi_3215, gi_3216,
+                        env_val, time_val, frame_ctr);
             }
 
             Sleep(16);  // ~60 FPS
