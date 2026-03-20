@@ -1105,15 +1105,87 @@ int main(int argc, char** argv) {
         // Insert scene process into exec queue list[1]
         insert_exec_list(&g_mem, EXEC_QUEUE + 0x0C, scene_proc);
 
+        // --- 5. Generic helper: create process and add to exec queue ---
+        // All process headers share the same layout (see Process Object Layout).
+        // We initialize the essential fields and link into exec queue list[1].
+        static uint32_t s_next_proc_id = 0xD5;
+        auto create_process = [&](uint16_t profile_id, uint32_t size, uint32_t desc_ptr,
+                                  uint32_t fn_table, uint32_t parent_sublayer) -> uint32_t {
+            uint32_t aligned = (g_bump_alloc_ptr + 31) & ~31;
+            if (aligned + size > BUMP_ALLOC_END) return 0;
+            uint32_t proc = aligned;
+            g_bump_alloc_ptr = aligned + size;
+            memset(g_mem.translate(proc), 0, size);
+
+            // Process header
+            g_mem.write32(proc + 0x00, 0x09130001);           // magic
+            g_mem.write32(proc + 0x04, s_next_proc_id++);     // process ID
+            g_mem.write32(proc + 0x08, (uint32_t)profile_id << 16);
+            g_mem.write32(proc + 0x0C, 0x02020000 | profile_id);
+            g_mem.write32(proc + 0x10, desc_ptr);             // profile descriptor
+            // Self-referential pointers
+            g_mem.write32(proc + 0x24, proc);
+            g_mem.write32(proc + 0x28, 0x01000000);
+            g_mem.write32(proc + 0x2C, parent_sublayer);
+            g_mem.write32(proc + 0x40, proc);
+            g_mem.write32(proc + 0x44, 0x01000000);
+            g_mem.write32(proc + 0x48, 0x00000001);
+            g_mem.write32(proc + 0x58, proc);
+            g_mem.write32(proc + 0x74, proc);
+            // Dispatch
+            g_mem.write32(proc + 0x90, 0x8003FD40);           // dispatch function
+            g_mem.write32(proc + 0xA8, fn_table);             // function table
+            // Profile-specific fields from descriptor
+            g_mem.write32(proc + 0x98, g_mem.read32(desc_ptr + 0));   // priority base
+            g_mem.write32(proc + 0x9C, g_mem.read32(desc_ptr + 4));   // parent priority
+            g_mem.write32(proc + 0xA0, g_mem.read32(desc_ptr + 0));
+            g_mem.write32(proc + 0xA4, g_mem.read32(desc_ptr + 4));
+
+            // Insert into exec queue list[1]
+            insert_exec_list(&g_mem, EXEC_QUEUE + 0x0C, proc);
+
+            return proc;
+        };
+
+        // --- 6. Create essential processes from Dolphin reference ---
+        // These are the core processes from sublayer 1 that drive the game.
+        // Profile: desc_ptr, size, fn_table (from profile desc +0x0C)
+        struct ProcTemplate {
+            uint16_t profile;
+            uint32_t size;
+            uint32_t desc_ptr;
+            uint32_t fn_table;  // from desc+0x0C or Dolphin capture
+        };
+        const ProcTemplate essential_procs[] = {
+            // Room manager (manages room loading)
+            {0x0017, 0x100,  0x80391254, 0x803726E8},
+            // Environment handler
+            {0x0028, 0x298,  0x80390718, 0x803726E8},
+            // Camera (large, but needed for view)
+            {0x00A9, 0x4C28, 0x8038FD8C, 0x803726E8},
+            // Scene sub-processes
+            {0x01B5, 0x698,  0x80389620, 0x803726E8},
+            {0x01BA, 0x2A0,  0x80390860, 0x803726E8},
+            {0x01BB, 0x2AC,  0x803908B0, 0x803726E8},
+            // Timing/controller
+            {0x01BC, 0x2E0,  0x80389D80, 0x803726E8},
+        };
+
+        for (const auto& tmpl : essential_procs) {
+            uint32_t proc = create_process(tmpl.profile, tmpl.size, tmpl.desc_ptr,
+                                           tmpl.fn_table, sublayer1);
+            if (proc) {
+                printf("[*]   Process 0x%04X at 0x%08X (%u bytes)\n",
+                       tmpl.profile, proc, tmpl.size);
+            }
+        }
+
         // Set r13(-32608) = exec queue base, r13(-32604) = number of lists
-        // func_802450D0 reads these: base ptr at -32608, list count at -32604
-        // In Dolphin: 16 lists (each 12 bytes: head/tail/count)
         g_mem.write32(g_ctx.r[13] - 32608, EXEC_QUEUE);
         g_mem.write32(g_ctx.r[13] - 32604, 16);  // 16 priority lists
 
-        printf("[*]   Exec queue at 0x%08X: list[1] count=%u\n",
-               EXEC_QUEUE, g_mem.read32(EXEC_QUEUE + 0x0C + 8));
-        printf("[*]   r13(-32608) = 0x%08X\n", g_mem.read32(g_ctx.r[13] - 32608));
+        uint32_t total_procs = g_mem.read32(EXEC_QUEUE + 0x0C + 8);
+        printf("[*]   Exec queue: %u processes in list[1]\n", total_procs);
         printf("[*] Process tree populated.\n");
     }
     fflush(stdout);
