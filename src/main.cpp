@@ -715,27 +715,7 @@ int main(int argc, char** argv) {
     // func_8000AF2C (mDoGph_gInf_c execute) — the scene manager's per-frame
     // Trace: actual profile-specific execute methods (called via CALL_INDIRECT)
     // Scene: 0x801948B4 (dScnPly_c::execute), Actor: 0x8015D87C (env execute)
-    g_func_table.register_func(0x801948B4, [](PPCContext* ctx, Memory* mem) {
-        static int count = 0;
-        if (count < 5) {
-            uint32_t proc = ctx->r[3];
-            uint32_t profile = (proc >= 0x80000000) ? mem->read32(proc + 8) >> 16 : 0;
-            fprintf(stderr, "[SCN-METHOD] 0x801948B4 called, proc=0x%08X profile=0x%04X\n",
-                    proc, profile);
-            // Check scene loading state
-            int16_t ss = (int16_t)mem->read16(ctx->r[13] - 30754);
-            fprintf(stderr, "  scene_state=%d\n", ss);
-            fflush(stderr);
-        }
-        count++;
-        extern void func_801948B4(PPCContext* ctx, Memory* mem);
-        func_801948B4(ctx, mem);
-        if (count <= 5) {
-            int16_t ss_after = (int16_t)mem->read16(ctx->r[13] - 30754);
-            fprintf(stderr, "  scene_state after=%d\n", ss_after);
-            fflush(stderr);
-        }
-    });
+    // No-op placeholder (strcmp trace removed — direct bl bypasses func_table)
     // dispatch. Phase 1 does scene state management (copies, vtable call, frame
     // swap). Phase 2 does camera/rendering setup that hangs without GX init.
     // We replace with Phase 1 only.
@@ -1209,6 +1189,21 @@ int main(int argc, char** argv) {
 
         uint32_t total_procs = g_mem.read32(EXEC_QUEUE + 0x0C + 8);
         printf("[*]   Exec queue: %u processes in list[1]\n", total_procs);
+        // --- 7. Initialize game info stage name for scene state machine ---
+        // func_801942E0 compares stage name at 0x803C9D2C with "sea" (0x8035EF58).
+        // If they don't match, the entire scene execute is skipped.
+        // 0x803C9D2C = 0x803C4BF8 (dComIfG_gameInfo base) + 0x5134 (play.mStage offset)
+        {
+            uint32_t stage_name_addr = 0x803C9D2C;
+            // The compare is against "sea" (area name), not "sea_T" (full stage)
+            g_mem.write8(stage_name_addr + 0, 's');
+            g_mem.write8(stage_name_addr + 1, 'e');
+            g_mem.write8(stage_name_addr + 2, 'a');
+            g_mem.write8(stage_name_addr + 3, 0);
+            printf("[*]   Stage name at 0x%08X = \"sea\"\n", stage_name_addr);
+
+        }
+
         printf("[*] Process tree populated.\n");
     }
     fflush(stdout);
@@ -1632,6 +1627,12 @@ int main(int argc, char** argv) {
         fflush(stdout);
     }
 
+    // ---- Set scene to active state ----
+    // The loading pipeline leaves scene_state = -1 (loaded). In Dolphin during
+    // gameplay, this is 0 (active/running). Set it now, after all loading.
+    g_mem.write16(g_ctx.r[13] - 30754, 0);
+    printf("[*] Scene state set to 0 (active).\n");
+
     // ---- Launch Game Thread ----
     printf("[*] Launching game thread (main01 loop)...\n");
     printf("[*] (Press ESC to quit)\n\n");
@@ -1779,6 +1780,18 @@ int main(int argc, char** argv) {
             {
                 extern void func_802403E0(PPCContext* ctx, Memory* mem);
                 func_802403E0(&g_ctx, &g_mem);
+            }
+
+            // Check scene state machine inputs
+            if (frame <= 2) {
+                char s1[8] = {}, s2[8] = {};
+                uint8_t* p1 = g_mem.translate(0x803C9D2C);
+                uint8_t* p2 = g_mem.translate(0x8035EF58);
+                for (int i = 0; i < 7 && p1[i]; i++) s1[i] = p1[i];
+                for (int i = 0; i < 7 && p2[i]; i++) s2[i] = p2[i];
+                fprintf(stderr, "[SCENE] strcmp: \"%s\" vs \"%s\" = %d\n",
+                        s1, s2, strcmp(s1, s2));
+                fflush(stderr);
             }
 
             // ---- Per-frame dispatch (replaces fapGm_Execute) ----
