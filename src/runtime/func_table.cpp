@@ -23,7 +23,7 @@ bool runtime_init() {
     g_ctx.reset();
 
     // Set initial stack pointer (top of main RAM - some space for OS)
-    g_ctx.r[1] = Memory::MAIN_RAM_BASE + Memory::MAIN_RAM_SIZE - 0x100;
+    g_ctx.r[1] = Memory::MAIN_RAM_BASE + g_mem.ram_size - 0x100;
 
     // Initialize Dolphin OS low-memory state (clock speeds, arena, game ID, etc.)
     init_low_memory(&g_mem);
