@@ -80,6 +80,7 @@ if(WW_BUILD_RUNTIME)
     add_executable(ww_launcher
         src/main.cpp
         src/j3d.cpp
+        src/jkr_archive.cpp
         tools/recompiler/dol_parser.cpp
     )
     target_link_libraries(ww_launcher PRIVATE
