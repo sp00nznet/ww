@@ -634,6 +634,28 @@ int main(int argc, char** argv) {
                 proc_addr, next_proc_id - 1);
     });
     printf("[*] func_80022CEC: HLE override (JKR mount active for other callers)\n");
+
+    // ---- Missing small functions not discovered by recompiler ----
+    // These are comparison functions between func_8004003C and func_80040080
+    // that the CFG builder missed. They're used as search predicates by the
+    // framework's linked list iteration.
+
+    // func_80040050: compare [r3+8] (halfword) with [r4] (halfword)
+    // Returns r3 if equal, 0 if not
+    g_func_table.register_func(0x80040050, [](PPCContext* ctx, Memory* mem) {
+        int16_t a = (int16_t)mem->read16(ctx->r[3] + 8);
+        int16_t b = (int16_t)mem->read16(ctx->r[4]);
+        if (a != b) ctx->r[3] = 0;
+    });
+
+    // func_80040068: compare [r3+4] (word, unsigned) with [r4] (word)
+    // Returns r3 if equal, 0 if not
+    g_func_table.register_func(0x80040068, [](PPCContext* ctx, Memory* mem) {
+        uint32_t a = mem->read32(ctx->r[3] + 4);
+        uint32_t b = mem->read32(ctx->r[4]);
+        if (a != b) ctx->r[3] = 0;
+    });
+
     // Per-process execute callback (via CALL_INDIRECT from layer iterator).
     g_func_table.register_func(0x80040198, [](PPCContext* ctx, Memory* mem) {
         static int trace_count = 0;
