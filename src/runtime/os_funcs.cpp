@@ -900,13 +900,16 @@ void register_os_functions() {
 }
 
 // Lookup OS function by name (called during symbol map loading)
+// Falls through to gcrecomp's generic OS table for functions not overridden here
+// (VI, CARD, init stubs, etc.)
 RecompiledFunc lookup_os_func(const char* name) {
     for (const auto* entry = g_os_func_table; entry->name != nullptr; entry++) {
         if (strcmp(entry->name, name) == 0) {
             return entry->func;
         }
     }
-    return nullptr;
+    // Chain to gcrecomp's generic OS function table
+    return gcrecomp::lookup_os_func(name);
 }
 
 // Set the root directory for game file access

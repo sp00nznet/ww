@@ -75,7 +75,7 @@ runs at full native speed with all compiler optimizations applied.
 | **Texture Decoder** | Decodes GC texture formats (I4/I8/IA/RGB565/RGB5A3/CMPR) | Done |
 | **Audio** | DSP ADPCM decoder, voice mixer | In Progress |
 | **Input** | Keyboard/XInput -> GameCube pad mapping | Done |
-| **OS Functions** | Replacement implementations for Dolphin OS calls | In Progress |
+| **OS Functions** | Replacement implementations for Dolphin OS calls (heap, DVD, VI, CARD, threads) | In Progress |
 
 ### Supported Instructions
 
@@ -274,6 +274,11 @@ RARO (1)    RARC override
 | DZS stage data parsing | Working — 13 chunks, full chunk table decoded |
 | Memory allocation | Working — bump allocator replaces JKR heap |
 | Time Base (TB) register | Working — host QueryPerformanceCounter scaled to 40.5MHz |
+| VI (Video Interface) HLE | Working — VIInit, VIWaitForRetrace (60Hz), VIFlush, framebuffer |
+| CARD (Memory Card) HLE | Working — host FS backed (memcard_a/, memcard_b/), full read/write |
+| Init stubs (OSInit, DVDInit, etc.) | Working — boot-time SDK calls satisfied |
+| PPC helpers (ppc_helpers.h) | Working — CNTLZW, ROTL32, MFTBL/U, PSQ load/store from gcrecomp |
+| HW register HLE | Working — VI line counter, SI/DI status, rate-limited logging |
 
 ### Framework Process System
 
@@ -311,8 +316,12 @@ pointer state that the real create functions would initialize.
 
 ### Next Steps
 
-- **Fix process creation** — make create functions work without JKR, or implement
-  a JKR archive mounting system that satisfies the creation chain
+- **Implement JKR archive mounting** — the main blocker for the entire process creation
+  chain. Every process create function (actors, camera, environment) loads resources
+  from JKR archives during construction. Without a working JKRMemArchive mount system,
+  processes can be allocated but not properly initialized.
+- **Get past the title screen** — requires enough of the framework (scene transitions,
+  input dispatch, UI rendering) to handle the title/file-select flow
 - **Connect game camera** — the camera process has 610 values from Dolphin including
   position/FOV; use these to replace the hardcoded orbiting camera
 - **Actor spawning** — parse room.dzr actor placements and create actor processes
