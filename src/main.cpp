@@ -15,6 +15,7 @@
 #include "ww/audio/audio.h"
 #include "ww/input/input.h"
 #include "ww/j3d.h"
+#include "ww/jkr_archive.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -152,28 +153,9 @@ static void idle_loop_replacement(PPCContext* ctx, Memory* mem) {
 static uint32_t g_bump_alloc_ptr = 0x80400000;  // Start of arena
 static const uint32_t BUMP_ALLOC_END = 0x81700000;  // End of arena
 
-// ---- Fake JKR Archive Object ----
-// We create a minimal fake JKRArchive-compatible object in emulated RAM so the
-// game's scene creation code (func_80022CEC) can use it as if it were a real
-// mounted archive. The object needs a valid vtable pointer and a "CASH" magic.
-//
-// Layout in emulated RAM (top of arena, well above game allocations):
-//   0x817FFB00: Fake vtable (8 entries pointing to no-op function 0x8030150C)
-//   0x817FFC00: Fake JKR object (88 bytes)
-//     +0:  vtable ptr → 0x817FFB00
-//     +44: 0x43415348 ("CASH" magic for mount list matching)
-//     +52: refcount (0)
-//     +72: mount point (non-null, points to root "/" string)
-//   0x817FFE00: RARC buffer pointer (GC addr of decompressed archive)
-//   0x817FFE04: RARC buffer size
-//   0x817FFE08: "/" string for mount point
-
-static const uint32_t FAKE_VTABLE_ADDR   = 0x817FFB00;
-static const uint32_t FAKE_JKR_OBJ_ADDR  = 0x817FFC00;
+// ---- RARC buffer tracking (legacy, used for stage.dzs/BDL parsing) ----
 static const uint32_t RARC_BUF_PTR_ADDR  = 0x817FFE00;
 static const uint32_t RARC_BUF_SIZE_ADDR = 0x817FFE04;
-static const uint32_t ROOT_STRING_ADDR   = 0x817FFE08;
-static const uint32_t NOOP_FUNC_ADDR     = 0x8030150C;  // PPCHalt (replaced with no-op)
 
 static void bump_alloc_replacement(PPCContext* ctx, Memory* mem) {
     // func_802B0434(r3=size, r4=align, r5=heap)
@@ -789,22 +771,9 @@ int main(int argc, char** argv) {
         printf("[*] Bump allocator: 0x%08X - 0x%08X\n",
                g_bump_alloc_ptr, BUMP_ALLOC_END);
 
-        // Set up fake JKR archive object for func_802B6FEC
-        // Fake vtable: all 8 entries point to our no-op function (PPCHalt replacement)
-        for (int i = 0; i < 8; i++) {
-            g_mem.write32(FAKE_VTABLE_ADDR + i * 4, NOOP_FUNC_ADDR);
-        }
-        // Root "/" string
-        g_mem.write8(ROOT_STRING_ADDR, '/');
-        g_mem.write8(ROOT_STRING_ADDR + 1, 0);
-        // Fake JKR object
-        memset(g_mem.translate(FAKE_JKR_OBJ_ADDR), 0, 88);
-        g_mem.write32(FAKE_JKR_OBJ_ADDR + 0, FAKE_VTABLE_ADDR);    // vtable
-        g_mem.write32(FAKE_JKR_OBJ_ADDR + 44, 0x43415348);         // "CASH" magic
-        g_mem.write32(FAKE_JKR_OBJ_ADDR + 52, 0);                  // refcount
-        g_mem.write32(FAKE_JKR_OBJ_ADDR + 72, ROOT_STRING_ADDR);   // mount point "/"
-        printf("[*] Fake JKR object at 0x%08X (vtable=0x%08X)\n",
-               FAKE_JKR_OBJ_ADDR, FAKE_VTABLE_ADDR);
+        // Initialize JKR archive mount system (vtable + sVolumeList)
+        jkr::init(g_func_table, g_mem);
+        jkr::register_os_funcs(g_func_table, g_mem);
     }
     fflush(stdout);
 
@@ -1436,6 +1405,8 @@ int main(int argc, char** argv) {
                                         printf("[*]     %s (%u bytes)\n",
                                                f.path.c_str(), f.data_size);
                                     }
+                                    // Mount into JKR system
+                                    jkr::mount("Stage", buf1_addr, decomp_size, g_mem);
                                 } else {
                                     printf("[*]   WARNING: RARC parse failed\n");
                                 }
@@ -1526,6 +1497,8 @@ int main(int argc, char** argv) {
                                     printf("[*]     %s (%u bytes)\n",
                                            f.path.c_str(), f.data_size);
                                 }
+                                // Mount into JKR system
+                                jkr::mount("Room44", room_buf_addr, room_decomp_size, g_mem);
                             } else {
                                 printf("[*]   WARNING: Room44 RARC parse failed\n");
                             }
@@ -1563,6 +1536,8 @@ int main(int argc, char** argv) {
                                 printf("[*]     %s (%u bytes)\n",
                                        f.path.c_str(), f.data_size);
                             }
+                            // Mount into JKR system
+                            jkr::mount("Room44", room_buf_addr, room_size, g_mem);
                         } else {
                             printf("[*]   WARNING: Room44 RARC parse failed\n");
                         }
