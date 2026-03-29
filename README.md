@@ -213,8 +213,9 @@ The game is **rendering textured 3D geometry from actual game data at 60fps**:
 - **TEV shader pipeline** — texture * vertex color modulation, compiled and cached per-state
 - **Full D3D11 draw path** — vertex buffer upload, pixel shader, blending, depth test, present
 - **Orbiting camera** — perspective projection with automatic rotation around the island
+- **JKR archive mount system** — proper JKRMemArchive objects in emulated memory with working vtable, linked into sVolumeList
 - Stage.arc Yaz0 decompressed (59KB → 299KB), Room44.arc loaded (714KB), stage.dzs parsed
-- 14 hardware-dependent functions patched in recompiled source
+- 16 hardware-dependent functions patched in recompiled source
 
 ### Loaded Archives (sea_T — Great Sea)
 
@@ -273,6 +274,8 @@ RARO (1)    RARC override
 | Multi-model scene | Working — terrain (opaque) + water (translucent alpha blend) |
 | DZS stage data parsing | Working — 13 chunks, full chunk table decoded |
 | Memory allocation | Working — bump allocator replaces JKR heap |
+| JKR archive mounting | Working — JKRMemArchive objects in emulated memory, sVolumeList linked |
+| getGlbResource / findVolume | Working — searches mounted archives, returns real JKR objects |
 | Time Base (TB) register | Working — host QueryPerformanceCounter scaled to 40.5MHz |
 | VI (Video Interface) HLE | Working — VIInit, VIWaitForRetrace (60Hz), VIFlush, framebuffer |
 | CARD (Memory Card) HLE | Working — host FS backed (memcard_a/, memcard_b/), full read/write |
