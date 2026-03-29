@@ -569,55 +569,41 @@ int main(int argc, char** argv) {
         printf("[*] Heap pointer at 0x%08X = 0x%08X\n", heap_ptr_addr, arena_lo);
     }
 
-    // ---- Override problematic functions ----
-    // Replace func_80022CEC (dScnPly_c::create) with a C implementation that
-    // allocates a REAL process object for the scene process (profile 0x0015).
-    // The original hangs due to JKR mount list issues. Our replacement allocates
-    // the process, initializes its header fields (using Dolphin reference data),
-    // and returns the pointer so func_80018430 stores it correctly.
-    //
-    // Process object layout (from Dolphin capture of profile 0x0015):
-    //   +0x00: 0x09130001  magic/state flags
-    //   +0x04: process_id  unique sequential ID
-    //   +0x08: profile<<16 = 0x00150000
-    //   +0x0C: 0x02020015  flags | profile
-    //   +0x10: desc_ptr    profile descriptor at 0x80391B88
-    //   +0x18: list node   {prev, list_anchor, next, proc_base}
-    //   +0x24: self_ptr    points to own address
-    //   +0x28: 0x01000000  flags
-    //   +0x40: self_ptr
-    //   +0x58: self_ptr
-    //   +0x74: self_ptr
-    //   +0x90: 0x8003FD40  dispatch function
-    //   +0xB4: 0x09130003  sub-state
-    //   +0xD0: self_ptr
-    //   +0xD4: 0x01000000  flags
-    //   +0xD8: 0x80391B74  sub-descriptor
+    // ---- func_80022CEC (dScnPly_c::create) ----
+    // Now using the original recompiled code — the JKR mount system provides
+    // proper getGlbResource/findVolume so the original creation chain can run.
+    // The recompiled func_80022CEC in recomp_0003.cpp will:
+    //   1. Get archive heap (func_80011AB4 → 0x80400010)
+    //   2. Call getGlbResource → our JKR handler returns mounted archive
+    //   3. Call findVolume → our JKR handler returns volume
+    //   4. Call vtable[11] (detachResource) → no-op
+    //   5. Call vtable[3] (unmount) → decrement refcount
+    //   6. Framework setup + set scene created flag
+    // ---- func_80022CEC (dScnPly_c::create) — HLE override ----
+    // The original recompiled code has PPC stack leaks in its framework call
+    // chain (func_8024019C → descriptor linking), corrupting func_80018430's
+    // saved registers. We keep the native override for scene creation but the
+    // JKR mount system is active for all OTHER getGlbResource/findVolume callers.
     g_func_table.register_func(0x80022CEC, [](PPCContext* ctx, Memory* mem) {
-        static uint32_t next_proc_id = 0xD4;  // Scene process gets ID 0xD4
+        static uint32_t next_proc_id = 0xD4;
 
-        // Allocate 0xF8 bytes (profile 0x0015 object size) from bump allocator
+        // Allocate 0xF8 bytes (profile 0x0015 object)
         uint32_t size = 0xF8;
         uint32_t aligned = (g_bump_alloc_ptr + 31) & ~31;
         if (aligned + size > BUMP_ALLOC_END) {
-            fprintf(stderr, "[SCN] func_80022CEC: allocation failed!\n");
             ctx->r[3] = 0;
             return;
         }
         uint32_t proc_addr = aligned;
         g_bump_alloc_ptr = aligned + size;
-
-        // Zero-fill
         memset(mem->translate(proc_addr), 0, size);
 
-        // Initialize process header
-        mem->write32(proc_addr + 0x00, 0x09130001);  // magic
-        mem->write32(proc_addr + 0x04, next_proc_id++);  // process ID
-        mem->write32(proc_addr + 0x08, 0x00150000);  // profile 0x0015
-        mem->write32(proc_addr + 0x0C, 0x02020015);  // flags | profile
-        mem->write32(proc_addr + 0x10, 0x80391B88);  // profile descriptor
-
-        // Self-referential pointers (process points to itself in several fields)
+        // Initialize process header from Dolphin reference
+        mem->write32(proc_addr + 0x00, 0x09130001);
+        mem->write32(proc_addr + 0x04, next_proc_id++);
+        mem->write32(proc_addr + 0x08, 0x00150000);
+        mem->write32(proc_addr + 0x0C, 0x02020015);
+        mem->write32(proc_addr + 0x10, 0x80391B88);
         mem->write32(proc_addr + 0x24, proc_addr);
         mem->write32(proc_addr + 0x28, 0x01000000);
         mem->write32(proc_addr + 0x40, proc_addr);
@@ -625,34 +611,29 @@ int main(int argc, char** argv) {
         mem->write32(proc_addr + 0x48, 0x00000001);
         mem->write32(proc_addr + 0x58, proc_addr);
         mem->write32(proc_addr + 0x74, proc_addr);
-
-        // Dispatch function and state fields
         mem->write32(proc_addr + 0x90, 0x8003FD40);
         mem->write32(proc_addr + 0x98, 0xFFFFFFFD);
         mem->write32(proc_addr + 0x9C, 0x0001FFFD);
         mem->write32(proc_addr + 0xA0, 0xFFFFFFFD);
         mem->write32(proc_addr + 0xA4, 0x0001FFFD);
-        mem->write32(proc_addr + 0xA8, 0x803726E8);  // function table
+        mem->write32(proc_addr + 0xA8, 0x803726E8);
         mem->write32(proc_addr + 0xB4, 0x09130003);
-        mem->write32(proc_addr + 0xB8, 0x80372178);  // vtable dispatch
+        mem->write32(proc_addr + 0xB8, 0x80372178);
         mem->write32(proc_addr + 0xBC, 0x00000002);
         mem->write32(proc_addr + 0xC0, 0x09130004);
         mem->write32(proc_addr + 0xC8, 0x803B9E98);
         mem->write32(proc_addr + 0xD0, proc_addr);
         mem->write32(proc_addr + 0xD4, 0x01000000);
-        mem->write32(proc_addr + 0xD8, 0x80391B74);  // sub-descriptor
+        mem->write32(proc_addr + 0xD8, 0x80391B74);
         mem->write32(proc_addr + 0xFC, 0x000002D4);
 
-        // Set scene created flag
         mem->write32(ctx->r[13] - 30492, 1);
-
-        // Return the process pointer — func_80018430 stores this at item+28
         ctx->r[3] = proc_addr;
 
-        fprintf(stderr, "[SCN] func_80022CEC: allocated scene process at 0x%08X (id=%u)\n",
+        fprintf(stderr, "[SCN] Scene process created at 0x%08X (id=%u)\n",
                 proc_addr, next_proc_id - 1);
-        fflush(stderr);
     });
+    printf("[*] func_80022CEC: HLE override (JKR mount active for other callers)\n");
     // Per-process execute callback (via CALL_INDIRECT from layer iterator).
     g_func_table.register_func(0x80040198, [](PPCContext* ctx, Memory* mem) {
         static int trace_count = 0;
