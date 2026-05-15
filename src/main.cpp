@@ -168,6 +168,59 @@ static const uint32_t RARC_BUF_SIZE_ADDR = 0x817FFE04;
 // chain func_8003CFF0 → func_802412F8 → func_802B0494 (real JKR alloc)
 // is unreachable in our environment because we never initialize the JKR
 // heap structure; this override short-circuits to the bump arena.
+// Diagnostic logger for the patched func_8003D788 (fpcEx_ToExecuteQ).
+// Each time a process is linked into the dispatch queue, log its address
+// + profile so we can see whether a new actor gets queued.
+extern "C" void ww_log_to_executeq(uint32_t proc_addr) {
+    static int s_log = 0;
+    if (s_log < 30) {
+        uint16_t profname = 0;
+        if (proc_addr >= 0x80000000 && proc_addr < 0x81800000) {
+            profname = (uint16_t)((g_mem.read32(proc_addr + 8) >> 16) & 0xFFFF);
+        }
+        fprintf(stderr, "[ToExecQ] proc=0x%08X profile=0x%04X\n",
+                proc_addr, profname);
+        fflush(stderr);
+        s_log++;
+    }
+}
+
+// Diagnostic logger for the patched func_8003CA60 (fpcBs_Create entry).
+extern "C" void ww_log_bs_create_enter(uint16_t profname, uint32_t procID) {
+    static int s_log = 0;
+    if (s_log < 20) {
+        fprintf(stderr, "[bs_Create] profname=0x%04X procID=%u\n",
+                profname, procID);
+        fflush(stderr);
+        s_log++;
+    }
+}
+extern "C" void ww_log_bs_create_exit(uint16_t profname, uint32_t result) {
+    static int s_log = 0;
+    if (s_log < 20) {
+        fprintf(stderr, "[bs_Create]   profname=0x%04X -> 0x%08X\n",
+                profname, result);
+        fflush(stderr);
+        s_log++;
+    }
+}
+
+// Diagnostic logger for the patched func_8003CF08 (fpcCtRq_Do). Bounded
+// log so it doesn't spam past the first handful of invocations.
+extern "C" void ww_log_ctrq_do(uint32_t req_addr, uint32_t phase_handler_addr) {
+    static int s_log = 0;
+    if (s_log < 20) {
+        uint16_t procname = 0;
+        if (req_addr >= 0x80000000 && req_addr < 0x81800000) {
+            procname = g_mem.read16(req_addr + 0x50);
+        }
+        fprintf(stderr, "[ctRq_Do] req=0x%08X procname=0x%04X handler=0x%08X\n",
+                req_addr, procname, phase_handler_addr);
+        fflush(stderr);
+        s_log++;
+    }
+}
+
 extern "C" uint32_t ww_bump_alloc_host(int32_t align, uint32_t size) {
     if (size == 0) return 0;
     if (align < 0) align = -align;
@@ -609,6 +662,12 @@ int main(int argc, char** argv) {
     // JKR mount system is active for all OTHER getGlbResource/findVolume callers.
     g_func_table.register_func(0x80022CEC, [](PPCContext* ctx, Memory* mem) {
         static uint32_t next_proc_id = 0xD4;
+
+        // func_80022CEC is the scene-specific creation function (likely
+        // fopScnM_Create). It does NOT take a procname argument — it always
+        // creates a scene-profile (0x0015) process. The create-request
+        // pipeline calls fpcBs_Create (different function) for non-scene
+        // profiles.
 
         // Reuse the canonical boot scene if available. Avoids the dual-reality
         // problem where our parallel-allocated scene was never linked into
