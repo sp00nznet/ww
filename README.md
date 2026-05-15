@@ -335,6 +335,9 @@ pointer state that the real create functions would initialize.
 This project builds on incredible work by the community:
 
 - [**zeldaret/tww**](https://github.com/zeldaret/tww) — Wind Waker decompilation project providing invaluable symbol maps and architectural understanding
+- [**zeldaret/tp**](https://github.com/zeldaret/tp) — Twilight Princess decompilation; the shared Nintendo "ZeldaFramework" code (`f_pc_*`, `f_op_*`, `f_ap_*`) is nearly verbatim with WW and is our canonical reference for framework struct layouts
+- [**TwilitRealm/dusk**](https://github.com/TwilitRealm/dusk) (Dusklight) — TP source port whose decomp headers we vendor under `docs/dusk-ref/` (CC0) as a reverse-engineering reference for the framework we recompile
+- [**Aurora**](https://github.com/encounter/aurora) — Source-level GC/Wii compatibility layer (different translation strategy than ours, but a model for cross-platform GX/DVD/PAD host services)
 - [**N64Recomp**](https://github.com/N64Recomp/N64Recomp) — Pioneered the static recompilation approach for N64 games
 - [**Dolphin**](https://github.com/dolphin-emu/dolphin) — The gold standard GameCube/Wii emulator, whose GX shader generation code informs our TEV implementation
 - [**decomp-toolkit**](https://github.com/encounter/decomp-toolkit) — GameCube binary analysis tools
