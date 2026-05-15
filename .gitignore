@@ -38,6 +38,18 @@ recompiled/
 # Extracted assets
 assets/extracted/
 
+# Game files - additional
+main.dol
+
+# Diagnostic captures and screenshots
+dolphin_*.bin
+dolphin_*.json
+dolphin_*.txt
+*.png
+
+# Local Claude settings
+.claude/settings.local.json
+
 # OS
 Thumbs.db
 .DS_Store

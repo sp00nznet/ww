@@ -11,7 +11,9 @@
 
 #include "ww/jkr_archive.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <algorithm>
 
 namespace ww {
@@ -320,97 +322,169 @@ const MountedArchive* find_by_obj(uint32_t gc_jkr_obj_addr) {
 // ---- OS Function Replacements ----
 // These override the patched recompiled functions via func_table registration.
 
-// func_802B6FEC: getGlbResource(r3=path, r4=loader_or_heap, r5=flags)
-// Searches sVolumeList for a volume matching the path prefix.
-// Returns the JKRArchive* (GC address), NOT the file data.
+// Canonical JKRFileLoader::fetchVolumeName from dusk/zeldaret-tp:
+//   - "/" → "/" (root)
+//   - "/abc/foo/bar" → "abc" (skip leading slash, lowercase, stop at next '/')
+// Returns the parsed name in `out` and the rest of the path (or "/" if no rest).
+static std::string fetch_volume_name(const std::string& path) {
+    if (path == "/") return "/";
+    if (path.empty() || path[0] != '/') return "";
+    std::string out;
+    for (size_t i = 1; i < path.size() && path[i] != '/'; ++i) {
+        out.push_back((char)std::tolower((unsigned char)path[i]));
+    }
+    return out;
+}
+
+// Toggle for the previous behavior (prefix-match + fallback to first archive).
+// Default: canonical (exact match, NULL on miss, sCurrentVolume for non-'/').
+// Set WW_JKR_LEGACY_FALLBACK=1 to re-enable the old mask.
+static bool jkr_legacy_fallback() {
+    static const bool b = std::getenv("WW_JKR_LEGACY_FALLBACK") != nullptr;
+    return b;
+}
+
+// Tracks the most-recently-mounted/found volume to mirror JKRFileLoader::sCurrentVolume.
+// Canonical: getGlbResource/findVolume on a path NOT starting with '/' returns sCurrentVolume.
+static uint32_t g_current_volume_obj = 0;
+
+// Find archive by exact-match volume name (case-insensitive on the input,
+// volume names are already lowercase from fetch_volume_name).
+static MountedArchive* find_archive_exact(const std::string& vname) {
+    for (auto& arc : g_archives) {
+        // arc.volume_name was set at mount time; compare lowercased.
+        if (arc.volume_name.size() == vname.size() &&
+            _strnicmp(arc.volume_name.c_str(), vname.c_str(),
+                      vname.size()) == 0) {
+            return &arc;
+        }
+    }
+    return nullptr;
+}
+
+// func_802B6FEC: JKRFileLoader::getGlbResource (static)
+//   Canonical: parses volume name from path, looks up volume, calls
+//   volume->getResource(rest_of_path) which returns the file DATA pointer.
+// Our HLE returns the JKR object address (legacy behavior preserved for
+// caller compatibility). Real getResource lookup happens in vtable[5].
 static void hle_getGlbResource(PPCContext* ctx, Memory* mem) {
     uint32_t path_addr = ctx->r[3];
     std::string path = read_gc_string(*mem, path_addr);
-
-    // The game's getGlbResource iterates sVolumeList. For each volume, it
-    // checks if volumeType == 'RARC' (via the "CASH" arithmetic check) and
-    // compares the volume name with the path prefix.
-    //
-    // For our purposes, we return the FIRST mounted archive that matches
-    // or (if no prefix match) the first archive period.
 
     if (g_archives.empty()) {
         ctx->r[3] = 0;
         return;
     }
 
-    // Try to match path prefix against volume names
-    std::string search = path;
-    // Strip leading '/' or '\\'
-    while (!search.empty() && (search[0] == '/' || search[0] == '\\'))
-        search.erase(0, 1);
-
-    for (auto& arc : g_archives) {
-        // Check if path starts with volume name
-        if (search.size() >= arc.volume_name.size() &&
-            _strnicmp(search.c_str(), arc.volume_name.c_str(),
-                      arc.volume_name.size()) == 0) {
-            // Increment mount count (refcount)
-            uint32_t obj = arc.gc_jkr_obj_addr;
-            uint32_t mc = mem->read32(obj + off::MOUNT_COUNT);
-            mem->write32(obj + off::MOUNT_COUNT, mc + 1);
-
-            printf("[JKR] getGlbResource('%s') -> 0x%08X (%s)\n",
-                   path.c_str(), obj, arc.volume_name.c_str());
-            ctx->r[3] = obj;
+    // Canonical algorithm: path not starting with '/' uses sCurrentVolume.
+    if (path.empty() || path[0] != '/') {
+        if (g_current_volume_obj != 0) {
+            printf("[JKR] getGlbResource('%s') -> 0x%08X (sCurrentVolume)\n",
+                   path.c_str(), g_current_volume_obj);
+            ctx->r[3] = g_current_volume_obj;
             return;
         }
+        // No current volume set — legacy fallback or NULL.
+        if (jkr_legacy_fallback()) {
+            ctx->r[3] = g_archives[0].gc_jkr_obj_addr;
+            printf("[JKR] getGlbResource('%s') -> 0x%08X (legacy fallback, no current)\n",
+                   path.c_str(), ctx->r[3]);
+            return;
+        }
+        printf("[JKR] getGlbResource('%s') -> NULL (no current volume, no leading slash)\n",
+               path.c_str());
+        ctx->r[3] = 0;
+        return;
     }
 
-    // No prefix match — return first archive as fallback
-    uint32_t obj = g_archives[0].gc_jkr_obj_addr;
-    uint32_t mc = mem->read32(obj + off::MOUNT_COUNT);
-    mem->write32(obj + off::MOUNT_COUNT, mc + 1);
-    printf("[JKR] getGlbResource('%s') -> 0x%08X (fallback: %s)\n",
-           path.c_str(), obj, g_archives[0].volume_name.c_str());
-    ctx->r[3] = obj;
+    std::string vname = fetch_volume_name(path);
+    MountedArchive* arc = find_archive_exact(vname);
+
+    if (arc) {
+        uint32_t obj = arc->gc_jkr_obj_addr;
+        uint32_t mc = mem->read32(obj + off::MOUNT_COUNT);
+        mem->write32(obj + off::MOUNT_COUNT, mc + 1);
+        g_current_volume_obj = obj;
+        printf("[JKR] getGlbResource('%s') -> 0x%08X (volume='%s')\n",
+               path.c_str(), obj, vname.c_str());
+        ctx->r[3] = obj;
+        return;
+    }
+
+    // No match. Canonical: NULL. Legacy: first archive.
+    if (jkr_legacy_fallback()) {
+        uint32_t obj = g_archives[0].gc_jkr_obj_addr;
+        uint32_t mc = mem->read32(obj + off::MOUNT_COUNT);
+        mem->write32(obj + off::MOUNT_COUNT, mc + 1);
+        printf("[JKR] getGlbResource('%s') vol='%s' -> 0x%08X (LEGACY fallback)\n",
+               path.c_str(), vname.c_str(), obj);
+        ctx->r[3] = obj;
+        return;
+    }
+
+    printf("[JKR] getGlbResource('%s') vol='%s' -> NULL (no match)\n",
+           path.c_str(), vname.c_str());
+    ctx->r[3] = 0;
 }
 
-// func_802B6AB8: findVolume — search sVolumeList for a volume by name
-// r3 = pointer to struct with string pointer at [r3+0] (or sometimes r3=name directly)
+// func_802B6AB8: JKRFileLoader::findVolume (static)
+//   Canonical: takes a `const char**` (in-out path pointer). If *path doesn't
+//   start with '/', returns sCurrentVolume. Else parses volume name, walks
+//   sVolumeList, exact strcmp match. Updates *path to point past the volume
+//   segment. Returns NULL on miss.
 static void hle_findVolume(PPCContext* ctx, Memory* mem) {
-    // The original code is complex; we simplify by searching our registry.
-    // r3 typically points to a local struct with the parsed name at +0.
     uint32_t arg = ctx->r[3];
     std::string name;
 
-    // Try reading as a pointer to a string pointer first
+    // r3 typically points to a `const char**` (in/out path pointer).
     uint32_t maybe_str = mem->read32(arg);
     if (maybe_str >= 0x80000000 && maybe_str < 0x81800000) {
         name = read_gc_string(*mem, maybe_str);
     } else {
-        // Might be a direct string address
         name = read_gc_string(*mem, arg);
     }
 
-    // Strip leading '/'
-    while (!name.empty() && (name[0] == '/' || name[0] == '\\'))
-        name.erase(0, 1);
-
-    for (auto& arc : g_archives) {
-        if (_strnicmp(name.c_str(), arc.volume_name.c_str(),
-                      arc.volume_name.size()) == 0) {
-            printf("[JKR] findVolume('%s') -> 0x%08X (%s)\n",
-                   name.c_str(), arc.gc_jkr_obj_addr, arc.volume_name.c_str());
-            ctx->r[3] = arc.gc_jkr_obj_addr;
+    if (name.empty() || name[0] != '/') {
+        // Canonical: return sCurrentVolume.
+        if (g_current_volume_obj != 0) {
+            printf("[JKR] findVolume('%s') -> 0x%08X (sCurrentVolume)\n",
+                   name.c_str(), g_current_volume_obj);
+            ctx->r[3] = g_current_volume_obj;
             return;
         }
+        if (jkr_legacy_fallback() && !g_archives.empty()) {
+            ctx->r[3] = g_archives[0].gc_jkr_obj_addr;
+            printf("[JKR] findVolume('%s') -> 0x%08X (legacy fallback, no current)\n",
+                   name.c_str(), ctx->r[3]);
+            return;
+        }
+        printf("[JKR] findVolume('%s') -> NULL (no current volume)\n",
+               name.c_str());
+        ctx->r[3] = 0;
+        return;
     }
 
-    // Not found — return first archive as fallback if any exist
-    if (!g_archives.empty()) {
-        printf("[JKR] findVolume('%s') -> 0x%08X (fallback)\n",
-               name.c_str(), g_archives[0].gc_jkr_obj_addr);
-        ctx->r[3] = g_archives[0].gc_jkr_obj_addr;
-    } else {
-        printf("[JKR] findVolume('%s') -> NULL\n", name.c_str());
-        ctx->r[3] = 0;
+    std::string vname = fetch_volume_name(name);
+    MountedArchive* arc = find_archive_exact(vname);
+
+    if (arc) {
+        g_current_volume_obj = arc->gc_jkr_obj_addr;
+        printf("[JKR] findVolume('%s') -> 0x%08X (volume='%s')\n",
+               name.c_str(), arc->gc_jkr_obj_addr, vname.c_str());
+        ctx->r[3] = arc->gc_jkr_obj_addr;
+        return;
     }
+
+    if (jkr_legacy_fallback() && !g_archives.empty()) {
+        printf("[JKR] findVolume('%s') vol='%s' -> 0x%08X (LEGACY fallback)\n",
+               name.c_str(), vname.c_str(), g_archives[0].gc_jkr_obj_addr);
+        ctx->r[3] = g_archives[0].gc_jkr_obj_addr;
+        return;
+    }
+
+    printf("[JKR] findVolume('%s') vol='%s' -> NULL (no match)\n",
+           name.c_str(), vname.c_str());
+    ctx->r[3] = 0;
 }
 
 void register_os_funcs(FuncTable& ft, Memory& mem) {

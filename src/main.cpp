@@ -153,9 +153,32 @@ static void idle_loop_replacement(PPCContext* ctx, Memory* mem) {
 static uint32_t g_bump_alloc_ptr = 0x80400000;  // Start of arena
 static const uint32_t BUMP_ALLOC_END = 0x81700000;  // End of arena
 
+// Set during boot to the scene_proc created at startup (~line 1087).
+// The HLE for func_80022CEC returns this so callers see the canonical
+// scene already linked into sublayer1.listA and the exec queue, rather
+// than a duplicate floating in Reality B. 0 until boot init runs.
+static uint32_t g_boot_scene_proc = 0;
+
 // ---- RARC buffer tracking (legacy, used for stage.dzs/BDL parsing) ----
 static const uint32_t RARC_BUF_PTR_ADDR  = 0x817FFE00;
 static const uint32_t RARC_BUF_SIZE_ADDR = 0x817FFE04;
+
+// C-linkage host bump allocator. Called from the patched func_802412F8
+// (cMl::memalignB) in recomp_0048.cpp via direct C++ call. The recompiled
+// chain func_8003CFF0 → func_802412F8 → func_802B0494 (real JKR alloc)
+// is unreachable in our environment because we never initialize the JKR
+// heap structure; this override short-circuits to the bump arena.
+extern "C" uint32_t ww_bump_alloc_host(int32_t align, uint32_t size) {
+    if (size == 0) return 0;
+    if (align < 0) align = -align;
+    if (align < 4) align = 4;
+    uint32_t aligned = (g_bump_alloc_ptr + (uint32_t)align - 1) &
+                       ~((uint32_t)align - 1);
+    uint32_t end = aligned + size;
+    if (end > BUMP_ALLOC_END) return 0;
+    g_bump_alloc_ptr = end;
+    return aligned;
+}
 
 static void bump_alloc_replacement(PPCContext* ctx, Memory* mem) {
     // func_802B0434(r3=size, r4=align, r5=heap)
@@ -587,6 +610,72 @@ int main(int argc, char** argv) {
     g_func_table.register_func(0x80022CEC, [](PPCContext* ctx, Memory* mem) {
         static uint32_t next_proc_id = 0xD4;
 
+        // Reuse the canonical boot scene if available. Avoids the dual-reality
+        // problem where our parallel-allocated scene was never linked into
+        // sublayer1.listA or the exec queue, so the framework dispatch never
+        // saw it. The boot scene is already in both lists. Gated by env var
+        // so we can A/B test against the prior allocate-fresh behavior.
+        static const bool reuse_boot_scene =
+            std::getenv("WW_REUSE_BOOT_SCENE") != nullptr;
+        if (reuse_boot_scene && g_boot_scene_proc != 0) {
+            // Signal "scene created" flag (caller checks this).
+            mem->write32(ctx->r[13] - 30492, 1);
+            static int sLogCount = 0;
+            if (sLogCount++ < 3) {
+                fprintf(stderr, "[SCN] Reusing boot scene_proc 0x%08X "
+                                "(dispatched via sublayer1.listA + exec queue)\n",
+                        g_boot_scene_proc);
+                fflush(stderr);
+            }
+
+            // Drive the per-profile create_method on the canonical (linked)
+            // scene. Boot init only wrote raw header fields — it never ran
+            // the profile's create method, so per-scene state (kankyo, actor
+            // lists, etc.) hasn't been initialized. Now that the proc is
+            // properly in the dispatch lists, any state the create_method
+            // sets up is reachable from the per-frame execute_method.
+            static const bool drive_create_on_reuse =
+                std::getenv("WW_DRIVE_CREATE_METHOD") != nullptr;
+            static bool drove_create = false;
+            if (drive_create_on_reuse && !drove_create) {
+                drove_create = true;
+                uint32_t methods_ptr = mem->read32(g_boot_scene_proc + 0xA8);
+                uint32_t create_method = 0;
+                if (methods_ptr >= 0x80000000 && methods_ptr < 0x817FF000) {
+                    create_method = mem->read32(methods_ptr + 0x00);
+                }
+                if (create_method >= 0x80000000 && create_method < 0x817FF000) {
+                    // Temporarily set init_state=0 so fpcNd_Create runs its
+                    // layer-init branch on the boot scene.
+                    uint32_t saved_0C = mem->read32(g_boot_scene_proc + 0x0C);
+                    mem->write32(g_boot_scene_proc + 0x0C,
+                                 (saved_0C & 0x0000FFFFu) /* keep profname */);
+                    uint32_t saved_lr = ctx->lr;
+                    ctx->r[3] = g_boot_scene_proc;
+                    fprintf(stderr,
+                            "[SCN] Driving create_method 0x%08X on boot "
+                            "scene 0x%08X\n",
+                            create_method, g_boot_scene_proc);
+                    fflush(stderr);
+                    g_func_table.call(create_method, ctx, mem);
+                    uint32_t phase = ctx->r[3];
+                    ctx->lr = saved_lr;
+                    fprintf(stderr,
+                            "[SCN] boot-scene create_method phase=%u "
+                            "(4=COMPLEATE)\n",
+                            phase);
+                    fflush(stderr);
+                    // Restore init_state=2 (executing) regardless of phase
+                    // so the next-frame dispatch still picks it up.
+                    mem->write32(g_boot_scene_proc + 0x0C,
+                                 0x02020000u | (saved_0C & 0xFFFFu));
+                }
+            }
+
+            ctx->r[3] = g_boot_scene_proc;
+            return;
+        }
+
         // Allocate 0xF8 bytes (profile 0x0015 object)
         uint32_t size = 0xF8;
         uint32_t aligned = (g_bump_alloc_ptr + 31) & ~31;
@@ -602,7 +691,15 @@ int main(int argc, char** argv) {
         mem->write32(proc_addr + 0x00, 0x09130001);
         mem->write32(proc_addr + 0x04, next_proc_id++);
         mem->write32(proc_addr + 0x08, 0x00150000);
-        mem->write32(proc_addr + 0x0C, 0x02020015);
+        // +0x0C: state (init_state s8, create_phase u8) | profname (s16)
+        // Canonical fpcBs_Create sets init_state=0. When driving create_method
+        // (env var below), use 0 so fpcNd_Create's `if (init_state == 0)`
+        // branch runs and initializes the sublayer's priority lists. Without
+        // that branch the scene has no place for child actors.
+        // We bump init_state back to 2 after the create_method completes.
+        static const bool init_zero =
+            std::getenv("WW_DRIVE_CREATE_METHOD") != nullptr;
+        mem->write32(proc_addr + 0x0C, init_zero ? 0x00000015u : 0x02020015u);
         mem->write32(proc_addr + 0x10, 0x80391B88);
         mem->write32(proc_addr + 0x24, proc_addr);
         mem->write32(proc_addr + 0x28, 0x01000000);
@@ -616,7 +713,7 @@ int main(int argc, char** argv) {
         mem->write32(proc_addr + 0x9C, 0x0001FFFD);
         mem->write32(proc_addr + 0xA0, 0xFFFFFFFD);
         mem->write32(proc_addr + 0xA4, 0x0001FFFD);
-        mem->write32(proc_addr + 0xA8, 0x803726E8);
+        mem->write32(proc_addr + 0xA8, 0x803726E8);   // process_method_class*
         mem->write32(proc_addr + 0xB4, 0x09130003);
         mem->write32(proc_addr + 0xB8, 0x80372178);
         mem->write32(proc_addr + 0xBC, 0x00000002);
@@ -628,6 +725,62 @@ int main(int argc, char** argv) {
         mem->write32(proc_addr + 0xFC, 0x000002D4);
 
         mem->write32(ctx->r[13] - 30492, 1);
+
+        // Canonical pipeline: phase_SubCreateProcess calls fpcBs_SubCreate
+        // which dispatches the profile's create_method. Our HLE short-circuits
+        // the whole pipeline; without this call the per-profile init never
+        // runs (no actor lists, no kankyo setup, etc.). Drive it here.
+        //
+        // process_method_class layout (from f_pc_method.h):
+        //   +0x00 create_method   +0x04 delete_method
+        //   +0x08 execute_method  +0x0C is_delete_method
+        //
+        // Gate behind an env var so we can A/B test against the prior
+        // behavior if this introduces crashes.
+        if (init_zero) {
+            uint32_t methods_ptr = mem->read32(proc_addr + 0xA8);
+            uint32_t create_method = 0;
+            if (methods_ptr >= 0x80000000 && methods_ptr < 0x817FF000) {
+                create_method = mem->read32(methods_ptr + 0x00);
+            }
+            if (create_method >= 0x80000000 && create_method < 0x817FF000) {
+                // Save caller's r3 (return value slot); restore proc_addr after.
+                uint32_t saved_lr = ctx->lr;
+                ctx->r[3] = proc_addr;
+                fprintf(stderr,
+                        "[SCN] Calling create_method 0x%08X for proc 0x%08X "
+                        "(init_state=0)\n",
+                        create_method, proc_addr);
+                fflush(stderr);
+                g_func_table.call(create_method, ctx, mem);
+                uint32_t phase = ctx->r[3];
+                ctx->lr = saved_lr;
+                fprintf(stderr,
+                        "[SCN] create_method returned phase=%u "
+                        "(0=INIT 1=LOADING 2=NEXT 3=UNK3 4=COMPLEATE 5=ERROR)\n",
+                        phase);
+                fflush(stderr);
+
+                // Per fpcBs_SubCreate: on NEXT_e/COMPLEATE_e the pipeline
+                // advances; fpcEx_ToExecuteQ eventually bumps init_state=2.
+                // We short-circuit by promoting init_state to 2 directly so
+                // the per-frame fpcEx_Handler dispatches execute_method.
+                uint8_t new_init = (phase == 2 /*NEXT*/ ||
+                                    phase == 4 /*COMPLEATE*/) ? 2 : 1;
+                uint8_t new_phase =
+                    (phase == 2 || phase == 4) ? 2 /*NEXT*/ : 0 /*INIT*/;
+                mem->write32(proc_addr + 0x0C,
+                             (uint32_t(new_init) << 24) |
+                             (uint32_t(new_phase) << 16) | 0x0015u);
+            } else {
+                fprintf(stderr,
+                        "[SCN] No valid create_method (methods=0x%08X, fn=0x%08X)\n",
+                        methods_ptr, create_method);
+                // No create driven — restore the pre-existing executing state.
+                mem->write32(proc_addr + 0x0C, 0x02020015);
+            }
+        }
+
         ctx->r[3] = proc_addr;
 
         fprintf(stderr, "[SCN] Scene process created at 0x%08X (id=%u)\n",
@@ -661,9 +814,16 @@ int main(int argc, char** argv) {
         static int trace_count = 0;
         uint32_t node = ctx->r[3];
         uint32_t proc_base = (node >= 0x80000000) ? mem->read32(node + 12) : 0;
-        if (trace_count < 30) {
+        uint32_t callback_holder = ctx->r[4];
+        uint32_t callback_fn = (callback_holder >= 0x80000000)
+            ? mem->read32(callback_holder) : 0;
+        if (trace_count < 40) {
             uint32_t profile = (proc_base >= 0x80000000) ? mem->read32(proc_base + 8) >> 16 : 0;
-            fprintf(stderr, "[EXEC] proc=0x%08X profile=0x%04X\n", proc_base, profile);
+            const char* kind = (callback_fn == 0x8003E370) ? "EXEC"
+                             : (callback_fn == 0x8003E390) ? "DRAW"
+                             : "????";
+            fprintf(stderr, "[%s] proc=0x%08X profile=0x%04X cb=0x%08X\n",
+                    kind, proc_base, profile, callback_fn);
             fflush(stderr);
         }
         trace_count++;
@@ -761,6 +921,35 @@ int main(int argc, char** argv) {
         g_func_table.register_func(0x802B0434, bump_alloc_replacement);
         g_func_table.register_func(0x802B04FC, bump_free_replacement);
         g_func_table.register_func(0x8001199C, get_current_heap_replacement);
+
+        // cMl::memalignB (func_802412F8): r3=align, r4=size.
+        // Reads sCurrentHeap from r13-28096 — which is uninitialized in
+        // our boot, causing fpcCtRq_Create to fail allocator. Redirect
+        // here to use our bump arena directly.
+        g_func_table.register_func(0x802412F8, [](PPCContext* ctx, Memory* mem) {
+            int32_t align = (int32_t)ctx->r[3];
+            uint32_t size = ctx->r[4];
+            static int s_log = 0;
+            if (s_log < 10) {
+                fprintf(stderr, "[memalignB] align=%d size=%u bump=0x%08X\n",
+                        align, size, g_bump_alloc_ptr);
+                fflush(stderr);
+                s_log++;
+            }
+            if (size == 0) { ctx->r[3] = 0; return; }
+            if (align < 0) align = -align;
+            if (align < 4) align = 4;
+            uint32_t aligned = (g_bump_alloc_ptr + (uint32_t)align - 1) &
+                               ~((uint32_t)align - 1);
+            uint32_t end = aligned + size;
+            if (end > BUMP_ALLOC_END) { ctx->r[3] = 0; return; }
+            g_bump_alloc_ptr = end;
+            ctx->r[3] = aligned;
+            if (s_log <= 10) {
+                fprintf(stderr, "[memalignB]   -> 0x%08X\n", aligned);
+                fflush(stderr);
+            }
+        });
 
         // Set root heap globals so JKR code paths don't hit NULL checks
         // r13(-27060) = root heap ptr, r13(-27056) = current heap ptr
@@ -1061,6 +1250,10 @@ int main(int argc, char** argv) {
 
         // Insert scene process into sublayer 1's listA
         insert_listA(&g_mem, sublayer1, scene_proc);
+
+        // Publish for the func_80022CEC HLE so it returns this canonical,
+        // already-linked scene instead of allocating a parallel duplicate.
+        g_boot_scene_proc = scene_proc;
 
         printf("[*]   Scene process at 0x%08X (profile 0x0015)\n", scene_proc);
 
@@ -1651,8 +1844,237 @@ int main(int argc, char** argv) {
                 }
             }
         }
+
+        // ---- Parse room.dzr from Room44.arc (ACTR/SCOB chunks) ----
+        // Format: u32 chunk_count, then chunk_count headers of
+        // { char tag[4]; u32 entry_count; u32 entry_offset; }
+        // ACTR entries are 0x20 bytes each: char name[8], u32 params,
+        // float pos[3], s16 angle[3], u16 setID.
+        if (!room_compressed.empty()) {
+            const uint8_t* room_raw = room_compressed.data();
+            uint32_t room_raw_size = (uint32_t)room_compressed.size();
+            gcrecomp::RARCArchive room_arc;
+            if (gcrecomp::rarc_is_archive(room_raw, room_raw_size) &&
+                gcrecomp::rarc_parse(room_raw, room_raw_size, room_arc))
+            {
+                const gcrecomp::RARCFile* dzr =
+                    room_arc.find_path("dzr/room.dzr");
+                if (dzr) {
+                    const uint8_t* dz = room_arc.file_data(
+                        *dzr, room_raw, room_raw_size);
+                    if (dz && dzr->data_size >= 4) {
+                        auto be32 = [](const uint8_t* p) {
+                            return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16)
+                                 | (uint32_t(p[2]) << 8)  |  uint32_t(p[3]);
+                        };
+                        uint32_t chunk_count = be32(dz);
+                        printf("[*] room.dzr: %u bytes, %u chunks\n",
+                               dzr->data_size, chunk_count);
+                        for (uint32_t i = 0;
+                             i < chunk_count && 4 + i * 12 + 12 <= dzr->data_size;
+                             ++i)
+                        {
+                            const uint8_t* ch = dz + 4 + i * 12;
+                            char tag[5] = {(char)ch[0], (char)ch[1],
+                                           (char)ch[2], (char)ch[3], 0};
+                            uint32_t cnt = be32(ch + 4);
+                            uint32_t off = be32(ch + 8);
+                            printf("[*]   '%s': %u entries @ 0x%X\n",
+                                   tag, cnt, off);
+
+                            // Parse ACTR entries (also TGSC, TGDR etc share
+                            // the 0x20-byte base layout starting with name).
+                            if (strcmp(tag, "ACTR") == 0 && cnt > 0
+                                && off + cnt * 0x20 <= dzr->data_size)
+                            {
+                                int show = std::min<uint32_t>(cnt, 10);
+                                for (int j = 0; j < show; ++j) {
+                                    const uint8_t* e = dz + off + j * 0x20;
+                                    char name[9] = {};
+                                    memcpy(name, e, 8);
+                                    uint32_t params = be32(e + 8);
+                                    auto bef = [&](int p) {
+                                        uint32_t b = be32(e + p);
+                                        float f;
+                                        memcpy(&f, &b, 4);
+                                        return f;
+                                    };
+                                    float px = bef(0x0C), py = bef(0x10),
+                                          pz = bef(0x14);
+                                    int16_t ay = (int16_t)((e[0x1A] << 8) | e[0x1B]);
+                                    uint16_t setid = (uint16_t)((e[0x1E] << 8) | e[0x1F]);
+                                    printf("[ACTR] %-8s parm=0x%08X pos=(%.0f,%.0f,%.0f) ay=%d set=0x%04X\n",
+                                           name, params, px, py, pz,
+                                           ay, setid);
+                                }
+                                if ((uint32_t)show < cnt) {
+                                    printf("[ACTR] ... (%u more)\n", cnt - show);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     fflush(stdout);
+
+    // ---- Locate WW's actor name table (dStage_objectNameInf array) ----
+    // Each entry is exactly 12 bytes:
+    //   char name[8]       (inline, padded with zeros)
+    //   s16  procname      (profile ID, big-endian in guest memory)
+    //   s8   argument
+    //   (1 byte padding)
+    // The table is a contiguous array of these in the DOL data section.
+    // Scan for "woodbx\0\0" or similar known-actor names at 4-byte-aligned
+    // offsets and verify by checking that the next 8 bytes look like a
+    // plausible profile entry (and the bytes before are also a valid entry).
+    {
+        const char* probes[] = {
+            "woodbx", "ikada_h", "swood5", "swood3", "swood1",
+            "Tree", "Link", "NpcSo", "Vds", nullptr
+        };
+        printf("[ACTR-TBL] Scanning for dStage_objectNameInf table "
+               "(12-byte stride)...\n");
+        uint32_t candidate_table = 0;
+        int hits = 0;
+        // Iterate at 4-byte alignment over the data range.
+        for (uint32_t scan = 0x80300000; scan < 0x80400000 && !candidate_table;
+             scan += 4)
+        {
+            // Check if any probe matches an 8-byte inline name here.
+            for (int p = 0; probes[p]; ++p) {
+                size_t pl = strlen(probes[p]);
+                if (pl > 7) continue;
+                bool name_match = true;
+                for (size_t k = 0; k < 8; ++k) {
+                    uint8_t b = g_mem.read8(scan + (uint32_t)k);
+                    uint8_t want = (k < pl) ? (uint8_t)probes[p][k] : 0;
+                    if (b != want) { name_match = false; break; }
+                }
+                if (!name_match) continue;
+
+                // Plausibility: profile at +8 is BE u16 in 0x0001..0x0FFF,
+                // arg at +0xA is small signed (-1..127).
+                uint16_t proc = (uint16_t)((g_mem.read8(scan + 8) << 8) |
+                                            g_mem.read8(scan + 9));
+                int8_t arg = (int8_t)g_mem.read8(scan + 0x0A);
+                if (proc == 0 || proc > 0x0FFF) continue;
+
+                printf("[ACTR-TBL]   '%s' @0x%08X proc=0x%04X arg=%d\n",
+                       probes[p], scan, proc, arg);
+
+                if (++hits >= 1) {
+                    // Walk backward to find table start (look for zero/invalid
+                    // entries or alignment break).
+                    uint32_t guess = scan;
+                    // Try backing off by 12-byte multiples until we hit a
+                    // name byte 0 OR a name with non-printable first char.
+                    for (int back = 1; back <= 200; ++back) {
+                        uint32_t e = scan - (uint32_t)(back * 12);
+                        uint8_t first = g_mem.read8(e);
+                        if (first == 0 || first < 0x20 || first > 0x7E) {
+                            guess = scan - (uint32_t)((back - 1) * 12);
+                            break;
+                        }
+                    }
+                    candidate_table = guess;
+                }
+                if (hits >= 6) break;
+            }
+        }
+
+        if (candidate_table) {
+            printf("[ACTR-TBL] Table candidate base: 0x%08X. Dumping 16 "
+                   "entries:\n", candidate_table);
+            for (int i = 0; i < 16; ++i) {
+                uint32_t e = candidate_table + (uint32_t)(i * 12);
+                char nm[9] = {};
+                for (int k = 0; k < 8; ++k) {
+                    nm[k] = (char)g_mem.read8(e + (uint32_t)k);
+                }
+                uint16_t proc = (uint16_t)((g_mem.read8(e + 8) << 8) |
+                                            g_mem.read8(e + 9));
+                int8_t arg = (int8_t)g_mem.read8(e + 0x0A);
+                printf("[ACTR-TBL]   [%2d] '%-8.8s' proc=0x%04X arg=%d\n",
+                       i, nm, proc, arg);
+            }
+        } else {
+            printf("[ACTR-TBL] No candidate table found. Names may be in a "
+                   "REL or compressed section.\n");
+        }
+        fflush(stdout);
+    }
+
+    // ---- Spawn-one test: call fpcSCtRq_Request to enqueue one actor ----
+    // Verified function identity: func_8004086C = fpcSCtRq_Request.
+    //   r3 = layer_class*, r4 = procname (s16), r5 = createFunc (fn ptr),
+    //   r6 = param_4 (void*), r7 = append (void* — typically fopAcM_prm).
+    // Gated by env var WW_SPAWN_TEST=1. On success, the request is
+    // queued for processing by fpcCt_Handler on the next frame.
+    if (std::getenv("WW_SPAWN_TEST") != nullptr) {
+        printf("[SPAWN-TEST] Attempting to enqueue one 'woodbx' actor "
+               "(profile 0x010C)...\n");
+
+        // Allocate a fopAcM_prm_class (0x24 bytes) host-side in the bump
+        // region. Position the actor visibly: roughly above the island.
+        uint32_t prm_aligned = (g_bump_alloc_ptr + 31) & ~31;
+        uint32_t prm_addr = prm_aligned;
+        g_bump_alloc_ptr = prm_aligned + 0x24;
+        memset(g_mem.translate(prm_addr), 0, 0x24);
+
+        // fopAcM_prm_class layout (big-endian in guest memory):
+        //   0x00 u32 parameters
+        //   0x04 cXyz position (3 floats)
+        //   0x10 csXyz angle (3 s16)
+        //   0x16 u16 setID
+        //   0x18 prmScale (3 u8) + pad
+        //   0x1C fpc_ProcID parent_id
+        //   0x20 s8 argument
+        //   0x21 s8 room_no
+        g_mem.write32(prm_addr + 0x00, 0x00000000);  // parameters
+        // Position from room.dzr "woodbx" entry pos=(-203985, 544, 316656)
+        auto wf = [&](uint32_t addr, float v) {
+            uint32_t bits;
+            memcpy(&bits, &v, 4);
+            g_mem.write32(addr, bits);
+        };
+        wf(prm_addr + 0x04, -203985.0f);
+        wf(prm_addr + 0x08,     544.0f);
+        wf(prm_addr + 0x0C,  316656.0f);
+        g_mem.write32(prm_addr + 0x10, 0x00000000);  // angle xy = 0
+        g_mem.write16(prm_addr + 0x14, 0xE7D3);      // angle z = -6189
+        g_mem.write16(prm_addr + 0x16, 0xFFFF);      // setID
+        g_mem.write8(prm_addr + 0x18, 10);           // scale x
+        g_mem.write8(prm_addr + 0x19, 10);           // scale y
+        g_mem.write8(prm_addr + 0x1A, 10);           // scale z
+        g_mem.write32(prm_addr + 0x1C, 0xFFFFFFFE);  // parent_id (NONE)
+        g_mem.write8(prm_addr + 0x20, -1);           // argument
+        g_mem.write8(prm_addr + 0x21, 44);           // room_no (Outset = 44)
+
+        // Set up args for func_8004086C(r3=layer, r4=procname, r5=cf,
+        //                                r6=p4, r7=append):
+        g_ctx.r[3] = 0x803BCE20;   // sublayer 0 (DOL static layer_class)
+        g_ctx.r[4] = 0x010C;       // woodbx profile
+        g_ctx.r[5] = 0;            // no post-create func
+        g_ctx.r[6] = 0;            // no param_4
+        g_ctx.r[7] = prm_addr;     // append = our prm_class buffer
+
+        printf("[SPAWN-TEST]   layer=0x%08X procname=0x%04X prm=0x%08X\n",
+               (uint32_t)g_ctx.r[3], (uint16_t)g_ctx.r[4], prm_addr);
+
+        // Call fpcSCtRq_Request via FuncTable.
+        g_func_table.call(0x8004086C, &g_ctx, &g_mem);
+        uint32_t req_id = g_ctx.r[3];
+
+        if (req_id == 0xFFFFFFFF) {
+            printf("[SPAWN-TEST]   FAILED: fpcSCtRq_Request returned -1\n");
+        } else {
+            printf("[SPAWN-TEST]   OK: request_id=0x%X queued, "
+                   "will process next frame\n", req_id);
+        }
+        fflush(stdout);
+    }
 
     // ---- Diagnostics: check framework state ----
     {
@@ -2022,6 +2444,71 @@ int main(int argc, char** argv) {
         if (g_room_model_loaded) {
             using namespace gcrecomp::gx;
 
+            // Diagnostic: dump the matrix in slot 0 BEFORE we clobber it
+            // (this is whatever the game's dispatch wrote since our last
+            // frame). Snapshot counters so we know if the game actually
+            // touched the slot between renders.
+            static uint64_t s_last_counter_at_render[64];
+            static int s_mtx_log_count = 0;
+            if (s_mtx_log_count < 8) {
+                uint64_t now = GXGetMatrixWriteCounter(0);
+                if (now != s_last_counter_at_render[0] && now != 0) {
+                    float pre[3][4];
+                    GXGetMatrixSlot(0, pre);
+                    fprintf(stderr,
+                            "[CAM] f=%d game wrote slot 0 (counter %llu): "
+                            "[%.4f %.4f %.4f %.4f]\n"
+                            "                                "
+                            "[%.4f %.4f %.4f %.4f]\n"
+                            "                                "
+                            "[%.4f %.4f %.4f %.4f]\n",
+                            s_mtx_log_count,
+                            (unsigned long long)now,
+                            pre[0][0], pre[0][1], pre[0][2], pre[0][3],
+                            pre[1][0], pre[1][1], pre[1][2], pre[1][3],
+                            pre[2][0], pre[2][1], pre[2][2], pre[2][3]);
+                    fflush(stderr);
+                } else {
+                    fprintf(stderr,
+                            "[CAM] f=%d slot 0 unchanged since last render "
+                            "(counter=%llu)\n",
+                            s_mtx_log_count, (unsigned long long)now);
+                }
+                s_mtx_log_count++;
+            }
+            // Snapshot counters at THIS POINT (before our render touches anything).
+            for (uint32_t id = 0; id < 64; ++id) {
+                s_last_counter_at_render[id] = GXGetMatrixWriteCounter(id);
+            }
+
+            // Try using the game's matrix if env var is set (opt-in).
+            static const bool use_game_camera =
+                std::getenv("WW_USE_GAME_CAMERA") != nullptr;
+            bool used_game_mtx = false;
+            float game_mv[3][4];
+            if (use_game_camera && GXGetMatrixSlot(0, game_mv)) {
+                // Sanity check: not all zeros, not identity scaled to zero.
+                float sum = 0.0f;
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 4; ++c) sum += fabsf(game_mv[r][c]);
+                if (sum > 1e-6f) {
+                    GXLoadPosMtxImm(game_mv, 0);
+                    GXSetCurrentMtx(0);
+                    used_game_mtx = true;
+                    static int s_logged = 0;
+                    if (s_logged++ < 5) {
+                        fprintf(stderr,
+                                "[CAM] using game matrix slot 0: "
+                                "[%.3f %.3f %.3f %.3f / %.3f %.3f %.3f %.3f / "
+                                "%.3f %.3f %.3f %.3f]\n",
+                                game_mv[0][0], game_mv[0][1], game_mv[0][2], game_mv[0][3],
+                                game_mv[1][0], game_mv[1][1], game_mv[1][2], game_mv[1][3],
+                                game_mv[2][0], game_mv[2][1], game_mv[2][2], game_mv[2][3]);
+                        fflush(stderr);
+                    }
+                }
+            }
+
             // Rotate around Y axis, tilt down to see the island from above
             g_camera_angle += 0.006f;
 
@@ -2038,8 +2525,10 @@ int main(int argc, char** argv) {
                 { sx * sy * sc,         cx * sc,    -sx * cy * sc,        -0.55f },
                 { -cx * sy * sc,        sx * sc,     cx * cy * sc,         0.0f },
             };
-            GXLoadPosMtxImm(mv, 0);
-            GXSetCurrentMtx(0);
+            if (!used_game_mtx) {
+                GXLoadPosMtxImm(mv, 0);
+                GXSetCurrentMtx(0);
+            }
 
             // Orthographic projection with aspect correction and proper Z
             float proj[4][4] = {};
