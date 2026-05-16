@@ -22,6 +22,9 @@
 #include <thread>
 #include <atomic>
 #include <cmath>
+#include <map>
+#include <string>
+#include <vector>
 
 // Auto-generated function registration (from recompiler output)
 extern void register_recompiled_functions(ww::FuncTable& table);
@@ -159,6 +162,17 @@ static const uint32_t BUMP_ALLOC_END = 0x81700000;  // End of arena
 // than a duplicate floating in Reality B. 0 until boot init runs.
 static uint32_t g_boot_scene_proc = 0;
 
+// Parsed actor entries from room.dzr ACTR chunk. Populated during room
+// loading; consumed by the spawn-all loop when WW_SPAWN_TEST=all.
+struct ActrEntry {
+    char     name[9];
+    uint32_t parameters;
+    float    pos[3];
+    int16_t  angle[3];
+    uint16_t setID;
+};
+static std::vector<ActrEntry> g_actr_entries;
+
 // ---- RARC buffer tracking (legacy, used for stage.dzs/BDL parsing) ----
 static const uint32_t RARC_BUF_PTR_ADDR  = 0x817FFE00;
 static const uint32_t RARC_BUF_SIZE_ADDR = 0x817FFE04;
@@ -173,22 +187,55 @@ static const uint32_t RARC_BUF_SIZE_ADDR = 0x817FFE04;
 // + profile so we can see whether a new actor gets queued.
 extern "C" void ww_log_to_executeq(uint32_t proc_addr) {
     static int s_log = 0;
-    if (s_log < 30) {
-        uint16_t profname = 0;
-        if (proc_addr >= 0x80000000 && proc_addr < 0x81800000) {
-            profname = (uint16_t)((g_mem.read32(proc_addr + 8) >> 16) & 0xFFFF);
-        }
-        fprintf(stderr, "[ToExecQ] proc=0x%08X profile=0x%04X\n",
+    uint16_t profname = 0;
+    if (proc_addr >= 0x80000000 && proc_addr < 0x81800000) {
+        profname = g_mem.read16(proc_addr + 0x0E);
+    }
+    if (s_log < 300) {
+        fprintf(stderr, "[ToExecQ] proc=0x%08X profname=0x%04X\n",
                 proc_addr, profname);
         fflush(stderr);
         s_log++;
+    }
+
+    // Bridge to our boot dispatch list. The canonical fpcEx_ToLineQ inside
+    // ToExecQ links the process into the parent process_node's line list,
+    // but our per-frame iterator walks a separate list at 0x803BCD60+0x0C
+    // (populated by boot insert_exec_list). Mirror the insertion here so
+    // newly-spawned processes actually dispatch.
+    if (proc_addr < 0x80000000 || proc_addr >= 0x81800000) return;
+    const uint32_t list_anchor = 0x803BCD60 + 0x0C;
+    const uint32_t node_addr = proc_addr + 0x34;
+    // Already linked? proc+0x34 anchor field at +4 == list_anchor means yes.
+    if (g_mem.read32(node_addr + 4) == list_anchor) return;
+    g_mem.write32(node_addr + 0, 0);            // prev = NULL
+    g_mem.write32(node_addr + 4, list_anchor);  // anchor
+    g_mem.write32(node_addr + 8, 0);            // next = NULL
+    g_mem.write32(node_addr + 0xC, proc_addr);  // back-pointer
+    uint32_t old_head = g_mem.read32(list_anchor);
+    if (old_head == 0) {
+        g_mem.write32(list_anchor,     node_addr);
+        g_mem.write32(list_anchor + 4, node_addr);
+        g_mem.write32(list_anchor + 8, 1);
+    } else {
+        uint32_t old_tail = g_mem.read32(list_anchor + 4);
+        g_mem.write32(old_tail + 8, node_addr);
+        g_mem.write32(node_addr + 0, old_tail);
+        g_mem.write32(list_anchor + 4, node_addr);
+        uint32_t count = g_mem.read32(list_anchor + 8);
+        g_mem.write32(list_anchor + 8, count + 1);
+    }
+    if (s_log <= 30) {
+        fprintf(stderr, "[ToExecQ]   bridged into boot exec list, count=%u\n",
+                g_mem.read32(list_anchor + 8));
+        fflush(stderr);
     }
 }
 
 // Diagnostic logger for the patched func_8003CA60 (fpcBs_Create entry).
 extern "C" void ww_log_bs_create_enter(uint16_t profname, uint32_t procID) {
     static int s_log = 0;
-    if (s_log < 20) {
+    if (s_log < 200) {
         fprintf(stderr, "[bs_Create] profname=0x%04X procID=%u\n",
                 profname, procID);
         fflush(stderr);
@@ -197,7 +244,7 @@ extern "C" void ww_log_bs_create_enter(uint16_t profname, uint32_t procID) {
 }
 extern "C" void ww_log_bs_create_exit(uint16_t profname, uint32_t result) {
     static int s_log = 0;
-    if (s_log < 20) {
+    if (s_log < 200) {
         fprintf(stderr, "[bs_Create]   profname=0x%04X -> 0x%08X\n",
                 profname, result);
         fflush(stderr);
@@ -209,7 +256,7 @@ extern "C" void ww_log_bs_create_exit(uint16_t profname, uint32_t result) {
 // log so it doesn't spam past the first handful of invocations.
 extern "C" void ww_log_ctrq_do(uint32_t req_addr, uint32_t phase_handler_addr) {
     static int s_log = 0;
-    if (s_log < 20) {
+    if (s_log < 200) {
         uint16_t procname = 0;
         if (req_addr >= 0x80000000 && req_addr < 0x81800000) {
             procname = g_mem.read16(req_addr + 0x50);
@@ -877,12 +924,14 @@ int main(int argc, char** argv) {
         uint32_t callback_fn = (callback_holder >= 0x80000000)
             ? mem->read32(callback_holder) : 0;
         if (trace_count < 40) {
-            uint32_t profile = (proc_base >= 0x80000000) ? mem->read32(proc_base + 8) >> 16 : 0;
+            // profname is at base_process_class +0x0E (s16).
+            uint16_t profname = (proc_base >= 0x80000000)
+                ? mem->read16(proc_base + 0x0E) : 0;
             const char* kind = (callback_fn == 0x8003E370) ? "EXEC"
                              : (callback_fn == 0x8003E390) ? "DRAW"
                              : "????";
-            fprintf(stderr, "[%s] proc=0x%08X profile=0x%04X cb=0x%08X\n",
-                    kind, proc_base, profile, callback_fn);
+            fprintf(stderr, "[%s] proc=0x%08X profname=0x%04X cb=0x%08X\n",
+                    kind, proc_base, profname, callback_fn);
             fflush(stderr);
         }
         trace_count++;
@@ -1943,31 +1992,44 @@ int main(int argc, char** argv) {
 
                             // Parse ACTR entries (also TGSC, TGDR etc share
                             // the 0x20-byte base layout starting with name).
+                            // Store all entries to a global for later
+                            // spawn-all processing.
                             if (strcmp(tag, "ACTR") == 0 && cnt > 0
                                 && off + cnt * 0x20 <= dzr->data_size)
                             {
-                                int show = std::min<uint32_t>(cnt, 10);
-                                for (int j = 0; j < show; ++j) {
+                                g_actr_entries.clear();
+                                g_actr_entries.reserve(cnt);
+                                for (uint32_t j = 0; j < cnt; ++j) {
                                     const uint8_t* e = dz + off + j * 0x20;
-                                    char name[9] = {};
-                                    memcpy(name, e, 8);
-                                    uint32_t params = be32(e + 8);
+                                    ActrEntry a = {};
+                                    memcpy(a.name, e, 8);
+                                    a.parameters = be32(e + 8);
                                     auto bef = [&](int p) {
                                         uint32_t b = be32(e + p);
                                         float f;
                                         memcpy(&f, &b, 4);
                                         return f;
                                     };
-                                    float px = bef(0x0C), py = bef(0x10),
-                                          pz = bef(0x14);
-                                    int16_t ay = (int16_t)((e[0x1A] << 8) | e[0x1B]);
-                                    uint16_t setid = (uint16_t)((e[0x1E] << 8) | e[0x1F]);
+                                    a.pos[0] = bef(0x0C);
+                                    a.pos[1] = bef(0x10);
+                                    a.pos[2] = bef(0x14);
+                                    a.angle[0] = (int16_t)((e[0x18] << 8) | e[0x19]);
+                                    a.angle[1] = (int16_t)((e[0x1A] << 8) | e[0x1B]);
+                                    a.angle[2] = (int16_t)((e[0x1C] << 8) | e[0x1D]);
+                                    a.setID = (uint16_t)((e[0x1E] << 8) | e[0x1F]);
+                                    g_actr_entries.push_back(a);
+                                }
+                                int show = std::min<uint32_t>(cnt, 10);
+                                for (int j = 0; j < show; ++j) {
+                                    const auto& a = g_actr_entries[j];
                                     printf("[ACTR] %-8s parm=0x%08X pos=(%.0f,%.0f,%.0f) ay=%d set=0x%04X\n",
-                                           name, params, px, py, pz,
-                                           ay, setid);
+                                           a.name, a.parameters,
+                                           a.pos[0], a.pos[1], a.pos[2],
+                                           a.angle[1], a.setID);
                                 }
                                 if ((uint32_t)show < cnt) {
-                                    printf("[ACTR] ... (%u more)\n", cnt - show);
+                                    printf("[ACTR] ... (%u more, %zu stored)\n",
+                                           cnt - show, g_actr_entries.size());
                                 }
                             }
                         }
@@ -2065,72 +2127,165 @@ int main(int argc, char** argv) {
         fflush(stdout);
     }
 
-    // ---- Spawn-one test: call fpcSCtRq_Request to enqueue one actor ----
-    // Verified function identity: func_8004086C = fpcSCtRq_Request.
-    //   r3 = layer_class*, r4 = procname (s16), r5 = createFunc (fn ptr),
-    //   r6 = param_4 (void*), r7 = append (void* — typically fopAcM_prm).
-    // Gated by env var WW_SPAWN_TEST=1. On success, the request is
-    // queued for processing by fpcCt_Handler on the next frame.
-    if (std::getenv("WW_SPAWN_TEST") != nullptr) {
-        printf("[SPAWN-TEST] Attempting to enqueue one 'woodbx' actor "
-               "(profile 0x010C)...\n");
+    // ---- Dump the fpcSCtRq phase handler array ----
+    // Array of 7 cPhs__Handler at 0x803727FC (from fpcSCtRq_Request body).
+    // Layout: [phase_Load, phase_CreateProcess, phase_SubCreateProcess,
+    //         phase_IsComplete, phase_PostMethod, phase_Done, NULL]
+    {
+        const char* names[7] = {
+            "phase_Load", "phase_CreateProcess", "phase_SubCreateProcess",
+            "phase_IsComplete", "phase_PostMethod", "phase_Done", "NULL"
+        };
+        printf("[SCTRQ] phase handler array @ 0x803727FC:\n");
+        for (int i = 0; i < 7; ++i) {
+            uint32_t addr = g_mem.read32(0x803727FC + (uint32_t)(i * 4));
+            printf("[SCTRQ]   [%d] %-24s = 0x%08X\n", i, names[i], addr);
+        }
+    }
 
-        // Allocate a fopAcM_prm_class (0x24 bytes) host-side in the bump
-        // region. Position the actor visibly: roughly above the island.
-        uint32_t prm_aligned = (g_bump_alloc_ptr + 31) & ~31;
-        uint32_t prm_addr = prm_aligned;
-        g_bump_alloc_ptr = prm_aligned + 0x24;
-        memset(g_mem.translate(prm_addr), 0, 0x24);
+    // ---- Spawn test: enqueue actor(s) via fpcSCtRq_Request ----
+    // WW_SPAWN_TEST=1   → one hard-coded woodbx (profile 0x010C)
+    // WW_SPAWN_TEST=all → walk g_actr_entries, look each name up in the
+    //                     actor table at 0x80372818, spawn each.
+    if (const char* spawn_mode = std::getenv("WW_SPAWN_TEST")) {
+        const uint32_t ACTR_TBL = 0x80372818;
+        // Helper: look up an 8-char name (truncated/padded) in the actor
+        // name table. Returns 0 if not found.
+        auto lookup_proc = [&](const char* nm8) -> uint16_t {
+            for (uint32_t e = ACTR_TBL; e < 0x80380000; e += 12) {
+                // Stop at zero/non-printable first byte (end of table).
+                uint8_t first = g_mem.read8(e);
+                if (first == 0 || first < 0x20 || first > 0x7E) break;
+                bool match = true;
+                for (int k = 0; k < 8; ++k) {
+                    uint8_t got = g_mem.read8(e + (uint32_t)k);
+                    uint8_t want = (uint8_t)(nm8[k] ? nm8[k] : 0);
+                    if (got != want) { match = false; break; }
+                }
+                if (match) {
+                    return (uint16_t)((g_mem.read8(e + 8) << 8) |
+                                       g_mem.read8(e + 9));
+                }
+            }
+            return 0;
+        };
 
-        // fopAcM_prm_class layout (big-endian in guest memory):
-        //   0x00 u32 parameters
-        //   0x04 cXyz position (3 floats)
-        //   0x10 csXyz angle (3 s16)
-        //   0x16 u16 setID
-        //   0x18 prmScale (3 u8) + pad
-        //   0x1C fpc_ProcID parent_id
-        //   0x20 s8 argument
-        //   0x21 s8 room_no
-        g_mem.write32(prm_addr + 0x00, 0x00000000);  // parameters
-        // Position from room.dzr "woodbx" entry pos=(-203985, 544, 316656)
-        auto wf = [&](uint32_t addr, float v) {
-            uint32_t bits;
-            memcpy(&bits, &v, 4);
+        // Allocate one prm_class per spawn. Helper builds it from an ActrEntry.
+        auto write_be_f = [&](uint32_t addr, float v) {
+            uint32_t bits; memcpy(&bits, &v, 4);
             g_mem.write32(addr, bits);
         };
-        wf(prm_addr + 0x04, -203985.0f);
-        wf(prm_addr + 0x08,     544.0f);
-        wf(prm_addr + 0x0C,  316656.0f);
-        g_mem.write32(prm_addr + 0x10, 0x00000000);  // angle xy = 0
-        g_mem.write16(prm_addr + 0x14, 0xE7D3);      // angle z = -6189
-        g_mem.write16(prm_addr + 0x16, 0xFFFF);      // setID
-        g_mem.write8(prm_addr + 0x18, 10);           // scale x
-        g_mem.write8(prm_addr + 0x19, 10);           // scale y
-        g_mem.write8(prm_addr + 0x1A, 10);           // scale z
-        g_mem.write32(prm_addr + 0x1C, 0xFFFFFFFE);  // parent_id (NONE)
-        g_mem.write8(prm_addr + 0x20, -1);           // argument
-        g_mem.write8(prm_addr + 0x21, 44);           // room_no (Outset = 44)
+        auto build_prm = [&](const ActrEntry& a) -> uint32_t {
+            uint32_t prm_aligned = (g_bump_alloc_ptr + 31) & ~31;
+            uint32_t prm = prm_aligned;
+            g_bump_alloc_ptr = prm_aligned + 0x24;
+            memset(g_mem.translate(prm), 0, 0x24);
+            g_mem.write32(prm + 0x00, a.parameters);
+            write_be_f(prm + 0x04, a.pos[0]);
+            write_be_f(prm + 0x08, a.pos[1]);
+            write_be_f(prm + 0x0C, a.pos[2]);
+            g_mem.write16(prm + 0x10, (uint16_t)a.angle[0]);
+            g_mem.write16(prm + 0x12, (uint16_t)a.angle[1]);
+            g_mem.write16(prm + 0x14, (uint16_t)a.angle[2]);
+            g_mem.write16(prm + 0x16, a.setID);
+            g_mem.write8 (prm + 0x18, 10);
+            g_mem.write8 (prm + 0x19, 10);
+            g_mem.write8 (prm + 0x1A, 10);
+            g_mem.write32(prm + 0x1C, 0xFFFFFFFE);  // parent_id NONE
+            g_mem.write8 (prm + 0x20, (uint8_t)-1);
+            g_mem.write8 (prm + 0x21, 44);
+            return prm;
+        };
 
-        // Set up args for func_8004086C(r3=layer, r4=procname, r5=cf,
-        //                                r6=p4, r7=append):
-        g_ctx.r[3] = 0x803BCE20;   // sublayer 0 (DOL static layer_class)
-        g_ctx.r[4] = 0x010C;       // woodbx profile
-        g_ctx.r[5] = 0;            // no post-create func
-        g_ctx.r[6] = 0;            // no param_4
-        g_ctx.r[7] = prm_addr;     // append = our prm_class buffer
+        // Direct-spawn helper: bypass the fpcSCtRq queue entirely (its
+        // iterator stops after the first request completes — likely a
+        // delete-during-iteration bug). Call fpcBs_Create (func_8003CA60)
+        // directly to allocate+init the process, then bridge it into our
+        // boot exec queue ourselves.
+        static uint32_t s_actor_id_counter = 0x100;
+        auto direct_spawn = [&](const ActrEntry& a, uint16_t procname,
+                                uint32_t prm) -> uint32_t {
+            g_ctx.r[3] = procname;
+            g_ctx.r[4] = s_actor_id_counter++;
+            g_ctx.r[5] = prm;
+            g_func_table.call(0x8003CA60, &g_ctx, &g_mem);  // fpcBs_Create
+            uint32_t proc = g_ctx.r[3];
+            if (proc == 0 || proc < 0x80000000 || proc >= 0x81800000) {
+                return 0;
+            }
+            // Set init_state = 2 (executing) so the dispatcher accepts it.
+            uint32_t s0C = g_mem.read32(proc + 0x0C);
+            g_mem.write32(proc + 0x0C, (s0C & 0x0000FFFFu) | 0x02020000u);
+            // Bridge into boot exec queue (same code as ww_log_to_executeq).
+            const uint32_t list_anchor = 0x803BCD60 + 0x0C;
+            const uint32_t node_addr = proc + 0x34;
+            if (g_mem.read32(node_addr + 4) != list_anchor) {
+                g_mem.write32(node_addr + 0, 0);
+                g_mem.write32(node_addr + 4, list_anchor);
+                g_mem.write32(node_addr + 8, 0);
+                g_mem.write32(node_addr + 0xC, proc);
+                uint32_t old_head = g_mem.read32(list_anchor);
+                if (old_head == 0) {
+                    g_mem.write32(list_anchor,     node_addr);
+                    g_mem.write32(list_anchor + 4, node_addr);
+                    g_mem.write32(list_anchor + 8, 1);
+                } else {
+                    uint32_t old_tail = g_mem.read32(list_anchor + 4);
+                    g_mem.write32(old_tail + 8, node_addr);
+                    g_mem.write32(node_addr + 0, old_tail);
+                    g_mem.write32(list_anchor + 4, node_addr);
+                    uint32_t count = g_mem.read32(list_anchor + 8);
+                    g_mem.write32(list_anchor + 8, count + 1);
+                }
+            }
+            return proc;
+        };
 
-        printf("[SPAWN-TEST]   layer=0x%08X procname=0x%04X prm=0x%08X\n",
-               (uint32_t)g_ctx.r[3], (uint16_t)g_ctx.r[4], prm_addr);
+        auto enqueue_one = [&](const ActrEntry& a, uint16_t procname) -> uint32_t {
+            return direct_spawn(a, procname, build_prm(a));
+        };
 
-        // Call fpcSCtRq_Request via FuncTable.
-        g_func_table.call(0x8004086C, &g_ctx, &g_mem);
-        uint32_t req_id = g_ctx.r[3];
-
-        if (req_id == 0xFFFFFFFF) {
-            printf("[SPAWN-TEST]   FAILED: fpcSCtRq_Request returned -1\n");
+        if (strcmp(spawn_mode, "all") == 0) {
+            if (g_actr_entries.empty()) {
+                printf("[SPAWN-ALL] No ACTR entries parsed; nothing to spawn.\n");
+            } else {
+                printf("[SPAWN-ALL] Resolving %zu actor names against table "
+                       "0x%08X and enqueuing...\n",
+                       g_actr_entries.size(), ACTR_TBL);
+                int ok = 0, miss = 0, fail = 0;
+                std::map<std::string, int> miss_names;
+                for (const auto& a : g_actr_entries) {
+                    uint16_t pn = lookup_proc(a.name);
+                    if (pn == 0) {
+                        miss++;
+                        miss_names[a.name]++;
+                        continue;
+                    }
+                    uint32_t proc = enqueue_one(a, pn);
+                    if (proc == 0) fail++; else ok++;
+                }
+                printf("[SPAWN-ALL] Result: %d enqueued, %d name-misses, "
+                       "%d enqueue-failures (of %zu total).\n",
+                       ok, miss, fail, g_actr_entries.size());
+                if (!miss_names.empty()) {
+                    printf("[SPAWN-ALL] Missing names (top):\n");
+                    int shown = 0;
+                    for (const auto& kv : miss_names) {
+                        if (shown++ >= 10) break;
+                        printf("[SPAWN-ALL]   '%s' x%d\n", kv.first.c_str(),
+                               kv.second);
+                    }
+                }
+            }
         } else {
-            printf("[SPAWN-TEST]   OK: request_id=0x%X queued, "
-                   "will process next frame\n", req_id);
+            // Single-actor smoke test (woodbx hardcoded position).
+            printf("[SPAWN-TEST] Single woodbx (profile 0x010C)...\n");
+            ActrEntry a = {};
+            strcpy(a.name, "woodbx");
+            a.pos[0] = -203985.0f; a.pos[1] = 544.0f; a.pos[2] = 316656.0f;
+            a.angle[2] = -6189; a.setID = 0xFFFF;
+            uint32_t proc = enqueue_one(a, 0x010C);
+            printf("[SPAWN-TEST]   proc=0x%08X\n", proc);
         }
         fflush(stdout);
     }
