@@ -2520,6 +2520,19 @@ int main(int argc, char** argv) {
         printf("[*] Scene state set to 0 (active).\n");
     } else {
         printf("[*] WW_NATURAL_BOOT — leaving scene state alone.\n");
+
+        // Trigger canonical boot scene creation. func_80022DF8 is what
+        // main01 calls after the mDo*_Create init. It calls
+        // func_800183B4(0x80022CEC, 0) which queues a scene-create request
+        // pointing at our HLE'd scene-create function. The per-frame
+        // fapGm_Execute should then process the request and produce a
+        // scene process for the dispatcher.
+        printf("[*] WW_NATURAL_BOOT — calling func_80022DF8 to trigger "
+               "boot scene create...\n");
+        extern void func_80022DF8(PPCContext* ctx, Memory* mem);
+        func_80022DF8(&g_ctx, &g_mem);
+        printf("[*] func_80022DF8 returned; root scene ptr (r13-30488) = "
+               "0x%08X\n", g_mem.read32(g_ctx.r[13] - 30488));
     }
 
     // ---- Launch Game Thread ----
