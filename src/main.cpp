@@ -173,6 +173,16 @@ struct ActrEntry {
 };
 static std::vector<ActrEntry> g_actr_entries;
 
+// World positions of successfully spawned actors. The render loop draws
+// a colored cube marker at each so visible-actors progress can be seen
+// without per-actor model resource loading.
+struct SpawnedActorMarker {
+    float    pos[3];
+    uint16_t profname;
+    uint32_t proc_addr;
+};
+static std::vector<SpawnedActorMarker> g_spawn_markers;
+
 // ---- RARC buffer tracking (legacy, used for stage.dzs/BDL parsing) ----
 static const uint32_t RARC_BUF_PTR_ADDR  = 0x817FFE00;
 static const uint32_t RARC_BUF_SIZE_ADDR = 0x817FFE04;
@@ -2249,6 +2259,15 @@ int main(int argc, char** argv) {
             if (proc == 0 || proc < 0x80000000 || proc >= 0x81800000) {
                 return 0;
             }
+            // Remember this actor's world position so the render loop
+            // can draw a marker for it.
+            SpawnedActorMarker m{};
+            m.pos[0] = a.pos[0];
+            m.pos[1] = a.pos[1];
+            m.pos[2] = a.pos[2];
+            m.profname = procname;
+            m.proc_addr = proc;
+            g_spawn_markers.push_back(m);
             // Set init_state = 2 (executing) so the dispatcher accepts it.
             uint32_t s0C = g_mem.read32(proc + 0x0C);
             g_mem.write32(proc + 0x0C, (s0C & 0x0000FFFFu) | 0x02020000u);
@@ -2824,6 +2843,103 @@ int main(int argc, char** argv) {
             // Render ocean water (translucent)
             if (g_water_model_loaded) {
                 render_j3d_model(g_water_model, g_water_tex_objs, g_water_textures_loaded, true);
+            }
+
+            // ---- Render spawn markers (one cube per spawned actor) ----
+            // Each marker is a small cube in world coordinates at the actor's
+            // position. Coordinates use the same 1/14000 scale as the room.
+            // Profile-id maps to a color so different actor types are visible.
+            if (!g_spawn_markers.empty()) {
+                GXSetZMode(true, GX_LEQUAL, true);
+                GXSetCullMode(GX_CULL_NONE);
+                GXClearVtxDesc();
+                GXSetVtxDesc(GX_VA_POS,  GX_DIRECT);
+                GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+
+                // Cube half-edge in world units. Room model spans ~14000
+                // units; pick something visible at 1/14000 scale.
+                const float h = 800.0f;
+                // 6 cube faces × 6 verts (two triangles per face) = 36 verts.
+                static const float cube_verts[6 * 6 * 3] = {
+                    // -Z face (front), CCW
+                    -1,-1,-1,  +1,-1,-1,  +1,+1,-1,
+                    -1,-1,-1,  +1,+1,-1,  -1,+1,-1,
+                    // +Z face (back)
+                    +1,-1,+1,  -1,-1,+1,  -1,+1,+1,
+                    +1,-1,+1,  -1,+1,+1,  +1,+1,+1,
+                    // -X face (left)
+                    -1,-1,+1,  -1,-1,-1,  -1,+1,-1,
+                    -1,-1,+1,  -1,+1,-1,  -1,+1,+1,
+                    // +X face (right)
+                    +1,-1,-1,  +1,-1,+1,  +1,+1,+1,
+                    +1,-1,-1,  +1,+1,+1,  +1,+1,-1,
+                    // -Y face (bottom)
+                    -1,-1,+1,  +1,-1,+1,  +1,-1,-1,
+                    -1,-1,+1,  +1,-1,-1,  -1,-1,-1,
+                    // +Y face (top)
+                    -1,+1,-1,  +1,+1,-1,  +1,+1,+1,
+                    -1,+1,-1,  +1,+1,+1,  -1,+1,+1,
+                };
+
+                // Anchor: average actor world position so markers cluster
+                // around the rendered island instead of way off-screen.
+                // Computed once on first frame from the spawn markers.
+                static float anchor[3] = {0, 0, 0};
+                static bool anchor_set = false;
+                if (!anchor_set) {
+                    double sx = 0, sy_ = 0, sz = 0;
+                    for (const auto& m : g_spawn_markers) {
+                        sx += m.pos[0]; sy_ += m.pos[1]; sz += m.pos[2];
+                    }
+                    double n = (double)g_spawn_markers.size();
+                    anchor[0] = (float)(sx / n);
+                    anchor[1] = (float)(sy_ / n);
+                    anchor[2] = (float)(sz / n);
+                    anchor_set = true;
+                    fprintf(stderr, "[MARKER] anchor=(%.0f, %.0f, %.0f) n=%zu\n",
+                            anchor[0], anchor[1], anchor[2],
+                            g_spawn_markers.size());
+                }
+
+                for (const auto& m : g_spawn_markers) {
+                    // World position relative to anchor (so cluster of
+                    // actors centers near room origin).
+                    float wx = m.pos[0] - anchor[0];
+                    float wy = m.pos[1] - anchor[1];
+                    float wz = m.pos[2] - anchor[2];
+                    // Build a model-view matrix that combines the orbital
+                    // camera with this actor's relative translation.
+                    float wmv[3][4] = {
+                        { cy * sc,        0.0f,    sy * sc,
+                          ( cy * wx + sy * wz) * sc },
+                        { sx * sy * sc,   cx * sc, -sx * cy * sc,
+                          ( sx * sy * wx + cx * wy - sx * cy * wz) * sc - 0.55f },
+                        { -cx * sy * sc,  sx * sc, cx * cy * sc,
+                          (-cx * sy * wx + sx * wy + cx * cy * wz) * sc },
+                    };
+                    GXLoadPosMtxImm(wmv, 0);
+                    GXSetCurrentMtx(0);
+
+                    // Color per profile (low byte = hue band)
+                    uint8_t r = (uint8_t)(0x40 + ((m.profname * 53) & 0xBF));
+                    uint8_t g = (uint8_t)(0x40 + ((m.profname * 31) & 0xBF));
+                    uint8_t b = (uint8_t)(0x40 + ((m.profname * 17) & 0xBF));
+
+                    GXBegin(GX_TRIANGLES, 0, 36);
+                    for (int i = 0; i < 36; ++i) {
+                        float x = cube_verts[i * 3 + 0] * h;
+                        float y = cube_verts[i * 3 + 1] * h;
+                        float z = cube_verts[i * 3 + 2] * h;
+                        GXPosition3f32(x, y, z);
+                        GXColor4u8(r, g, b, 0xFF);
+                        GXSubmitVertex();
+                    }
+                    GXEnd();
+                }
+
+                // Restore main scene matrix.
+                GXLoadPosMtxImm(mv, 0);
+                GXSetCurrentMtx(0);
             }
         }
 
