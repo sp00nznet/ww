@@ -283,6 +283,20 @@ extern "C" int ww_spawn_test_active() {
     return active;
 }
 
+// Narrower gate: only redirect cMl::memalignB to our bump arena when
+// we're actively calling fpcBs_Create from the direct-spawn path.
+// Outside that window, leave canonical allocation behavior alone so
+// the rest of the create-request pipeline returns NULL as before
+// (otherwise it cascades into bad-address loops).
+static std::atomic<int> g_alloc_override{0};
+extern "C" int ww_alloc_override_active() {
+    return g_alloc_override.load(std::memory_order_relaxed);
+}
+struct ScopedAllocOverride {
+    ScopedAllocOverride()  { g_alloc_override.fetch_add(1, std::memory_order_relaxed); }
+    ~ScopedAllocOverride() { g_alloc_override.fetch_sub(1, std::memory_order_relaxed); }
+};
+
 extern "C" uint32_t ww_bump_alloc_host(int32_t align, uint32_t size) {
     if (size == 0) return 0;
     if (align < 0) align = -align;
@@ -2223,6 +2237,10 @@ int main(int argc, char** argv) {
         static uint32_t s_actor_id_counter = 0x100;
         auto direct_spawn = [&](const ActrEntry& a, uint16_t procname,
                                 uint32_t prm) -> uint32_t {
+            // Activate the cMl::memalignB override only for this call so
+            // the canonical create-request pipeline (which also calls
+            // memalignB) doesn't get its NULL-return behavior changed.
+            ScopedAllocOverride alloc_guard;
             g_ctx.r[3] = procname;
             g_ctx.r[4] = s_actor_id_counter++;
             g_ctx.r[5] = prm;
