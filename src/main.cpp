@@ -203,6 +203,13 @@ extern "C" void ww_log_to_executeq(uint32_t proc_addr) {
     // but our per-frame iterator walks a separate list at 0x803BCD60+0x0C
     // (populated by boot insert_exec_list). Mirror the insertion here so
     // newly-spawned processes actually dispatch.
+    //
+    // Only active when WW_SPAWN_TEST is set, to avoid contaminating the
+    // canonical dispatch chain during normal operation (the direct-spawn
+    // path now bridges synchronously, so this hook is just belt-and-
+    // suspenders).
+    static const bool spawn_active = std::getenv("WW_SPAWN_TEST") != nullptr;
+    if (!spawn_active) return;
     if (proc_addr < 0x80000000 || proc_addr >= 0x81800000) return;
     const uint32_t list_anchor = 0x803BCD60 + 0x0C;
     const uint32_t node_addr = proc_addr + 0x34;
@@ -266,6 +273,14 @@ extern "C" void ww_log_ctrq_do(uint32_t req_addr, uint32_t phase_handler_addr) {
         fflush(stderr);
         s_log++;
     }
+}
+
+// Used by recompiled patches (recomp_0006.cpp func_8003E2C8 and
+// func_80040704) to skip their original bodies only when actor spawning
+// is active. Cached to avoid env lookup per call.
+extern "C" int ww_spawn_test_active() {
+    static const int active = std::getenv("WW_SPAWN_TEST") ? 1 : 0;
+    return active;
 }
 
 extern "C" uint32_t ww_bump_alloc_host(int32_t align, uint32_t size) {
@@ -2249,12 +2264,20 @@ int main(int argc, char** argv) {
             if (g_actr_entries.empty()) {
                 printf("[SPAWN-ALL] No ACTR entries parsed; nothing to spawn.\n");
             } else {
+                // Cap via WW_SPAWN_LIMIT to avoid CPU-hogging the game
+                // thread with N actor execute_methods that read unset state.
+                size_t limit = g_actr_entries.size();
+                if (const char* lim_env = std::getenv("WW_SPAWN_LIMIT")) {
+                    size_t lv = (size_t)strtoul(lim_env, nullptr, 10);
+                    if (lv && lv < limit) limit = lv;
+                }
                 printf("[SPAWN-ALL] Resolving %zu actor names against table "
-                       "0x%08X and enqueuing...\n",
-                       g_actr_entries.size(), ACTR_TBL);
+                       "0x%08X and enqueuing (limit=%zu)...\n",
+                       g_actr_entries.size(), ACTR_TBL, limit);
                 int ok = 0, miss = 0, fail = 0;
                 std::map<std::string, int> miss_names;
-                for (const auto& a : g_actr_entries) {
+                for (size_t i = 0; i < limit; ++i) {
+                    const auto& a = g_actr_entries[i];
                     uint16_t pn = lookup_proc(a.name);
                     if (pn == 0) {
                         miss++;
@@ -2265,8 +2288,8 @@ int main(int argc, char** argv) {
                     if (proc == 0) fail++; else ok++;
                 }
                 printf("[SPAWN-ALL] Result: %d enqueued, %d name-misses, "
-                       "%d enqueue-failures (of %zu total).\n",
-                       ok, miss, fail, g_actr_entries.size());
+                       "%d enqueue-failures (of %zu attempted, %zu total in room).\n",
+                       ok, miss, fail, limit, g_actr_entries.size());
                 if (!miss_names.empty()) {
                     printf("[SPAWN-ALL] Missing names (top):\n");
                     int shown = 0;
