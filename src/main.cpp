@@ -2553,6 +2553,16 @@ int main(int argc, char** argv) {
     } else {
         printf("[*] WW_NATURAL_BOOT — leaving scene state alone.\n");
 
+        // Even in natural boot, we need the exec-queue pointer set so
+        // func_80040200 (called from fapGm_Execute → func_8003D7E0) can
+        // iterate processes. Without this, r13-32608 = 0 and the
+        // iterator visits nothing.
+        const uint32_t EXEC_QUEUE = 0x803BCD60;
+        g_mem.write32(g_ctx.r[13] - 32608, EXEC_QUEUE);
+        g_mem.write32(g_ctx.r[13] - 32604, 16);  // 16 priority lists
+        printf("[*] Natural-boot exec queue ptr set: r13-32608 = 0x%08X\n",
+               EXEC_QUEUE);
+
         // Trigger canonical boot scene creation. func_80022DF8 is what
         // main01 calls after the mDo*_Create init. It calls
         // func_800183B4(0x80022CEC, 0) which queues a scene-create request
@@ -2744,6 +2754,17 @@ int main(int argc, char** argv) {
             //     (func_800231E4) and let main()/scene_mgr drive everything.
             //     The frame gate may still block; if so we'll see and react.
             if (natural_boot) {
+                static int s_nb_log = 0;
+                if (s_nb_log < 5) {
+                    fprintf(stderr, "[NB] frame=%d calling fapGm_Execute "
+                            "(q_count=%u sl0=%u r13-32608=0x%08X)\n",
+                            frame,
+                            g_mem.read32(0x803A72C0 + 44),  // q count
+                            g_mem.read32(0x803BCE20 + 0x40),  // sublayer 0 listA count
+                            g_mem.read32(g_ctx.r[13] - 32608));
+                    fflush(stderr);
+                    s_nb_log++;
+                }
                 func_800231E4(&g_ctx, &g_mem);    // fapGm_Execute — natural
             } else {
                 extern void func_802539A4(PPCContext* ctx, Memory* mem);  // pre-frame setup
