@@ -2185,6 +2185,24 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- Marker-only mode: WW_MARK_ACTRS=1 ----
+    // Skip the actual fpcBs_Create spawn pipeline; just push visible
+    // markers for every parsed ACTR entry. Lets us render all 172
+    // markers without the per-actor execute_method CPU cost.
+    if (std::getenv("WW_MARK_ACTRS") != nullptr) {
+        for (const auto& a : g_actr_entries) {
+            SpawnedActorMarker m{};
+            m.pos[0] = a.pos[0];
+            m.pos[1] = a.pos[1];
+            m.pos[2] = a.pos[2];
+            // Use first 2 chars of name as a pseudo-profname for color hash.
+            m.profname = (uint16_t)((uint8_t)a.name[0] << 8 | (uint8_t)a.name[1]);
+            g_spawn_markers.push_back(m);
+        }
+        printf("[MARK-ACTRS] Pushed %zu markers from room.dzr ACTR entries\n",
+               g_actr_entries.size());
+    }
+
     // ---- Spawn test: enqueue actor(s) via fpcSCtRq_Request ----
     // WW_SPAWN_TEST=1   → one hard-coded woodbx (profile 0x010C)
     // WW_SPAWN_TEST=all → walk g_actr_entries, look each name up in the
