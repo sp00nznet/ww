@@ -2062,17 +2062,19 @@ int main(int argc, char** argv) {
     //   s8   argument
     //   (1 byte padding)
     // The table is a contiguous array of these in the DOL data section.
-    // Scan for "woodbx\0\0" or similar known-actor names at 4-byte-aligned
-    // offsets and verify by checking that the next 8 bytes look like a
-    // plausible profile entry (and the bytes before are also a valid entry).
+    // Address established empirically as 0x80372818 (see earlier scan
+    // output). The scan-based fallback only runs if WW_RESCAN_ACTR_TABLE
+    // is set — it's millions of g_mem.read8 calls in debug, ~10s.
     {
         const char* probes[] = {
             "woodbx", "ikada_h", "swood5", "swood3", "swood1",
             "Tree", "Link", "NpcSo", "Vds", nullptr
         };
+        uint32_t candidate_table = 0x80372818;  // hardcoded after verification
+        if (std::getenv("WW_RESCAN_ACTR_TABLE")) {
         printf("[ACTR-TBL] Scanning for dStage_objectNameInf table "
                "(12-byte stride)...\n");
-        uint32_t candidate_table = 0;
+        candidate_table = 0;
         int hits = 0;
         // Iterate at 4-byte alignment over the data range.
         for (uint32_t scan = 0x80300000; scan < 0x80400000 && !candidate_table;
@@ -2119,6 +2121,7 @@ int main(int argc, char** argv) {
                 if (hits >= 6) break;
             }
         }
+        }  // end WW_RESCAN_ACTR_TABLE
 
         if (candidate_table) {
             printf("[ACTR-TBL] Table candidate base: 0x%08X. Dumping 16 "
