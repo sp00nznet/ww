@@ -293,6 +293,14 @@ extern "C" int ww_spawn_test_active() {
     return active;
 }
 
+// Open the frame gate (func_8003EBD4) so fapGm_Execute can run dispatch
+// without needing VBlank interrupt simulation. Only used in natural-boot
+// mode where main() is driving its own loop.
+extern "C" int ww_frame_gate_open() {
+    static const int open_v = std::getenv("WW_FRAME_GATE_OPEN") ? 1 : 0;
+    return open_v;
+}
+
 // Narrower gate: only redirect cMl::memalignB to our bump arena when
 // we're actively calling fpcBs_Create from the direct-spawn path.
 // Outside that window, leave canonical allocation behavior alone so
@@ -1264,6 +1272,18 @@ int main(int argc, char** argv) {
     //   +0x04: list_anchor (sublayer + list_offset)
     //   +0x08: next_node (NULL for tail)
     //   +0x0C: process_base_addr
+    // ---- Forced-boot block ----
+    // Manual process-tree population using Dolphin-captured field values.
+    // Forces the game into "active gameplay on sea_T" state without going
+    // through the natural boot sequence (NDEV check → company logos →
+    // title → menu → play).
+    //
+    // Skip this when WW_NATURAL_BOOT=1 so main()/fapGm_Execute can drive
+    // the scene progression itself (target: get to the title screen).
+    bool natural_boot = std::getenv("WW_NATURAL_BOOT") != nullptr;
+    if (natural_boot) {
+        printf("[*] WW_NATURAL_BOOT=1 — skipping forced process tree.\n");
+    } else {
     printf("[*] Populating process tree...\n");
     {
         // --- Helper: insert a process into a sublayer's listA (+0x38) ---
@@ -1611,6 +1631,7 @@ int main(int argc, char** argv) {
 
         printf("[*] Process tree populated.\n");
     }
+    }  // end !natural_boot
     fflush(stdout);
 
     // Process any DVD requests enqueued during framework init.
@@ -2420,7 +2441,10 @@ int main(int argc, char** argv) {
     // structures that are zeroed in our recomp but have meaningful state in the
     // real game. We load captured state from Dolphin binary dumps to provide
     // the expected runtime context.
-    {
+    //
+    // Skipped under WW_NATURAL_BOOT — those captures are from active sea_T
+    // gameplay and would re-force us into that state, defeating natural boot.
+    if (!natural_boot) {
         struct RegionLoad {
             const char* filename;
             uint32_t addr;
@@ -2488,9 +2512,15 @@ int main(int argc, char** argv) {
         printf("[*] Dolphin state loaded: %d total values\n", total_loaded);
     }
 
-    // Set scene loading state to 0 (active/running)
-    g_mem.write16(g_ctx.r[13] - 30754, 0);
-    printf("[*] Scene state set to 0 (active).\n");
+    // Set scene loading state to 0 (active/running).
+    // Skip under WW_NATURAL_BOOT so the scene_mgr drives its own state
+    // transitions (boot → NDEV → company logos → title → menu → play).
+    if (!natural_boot) {
+        g_mem.write16(g_ctx.r[13] - 30754, 0);
+        printf("[*] Scene state set to 0 (active).\n");
+    } else {
+        printf("[*] WW_NATURAL_BOOT — leaving scene state alone.\n");
+    }
 
     // ---- Launch Game Thread ----
     printf("[*] Launching game thread (main01 loop)...\n");
@@ -2653,13 +2683,18 @@ int main(int argc, char** argv) {
                 fflush(stderr);
             }
 
-            // ---- Per-frame dispatch (replaces fapGm_Execute) ----
-            // The original func_800231E4 → func_8003EC84 chain is blocked by
-            // the frame gate (func_8003EBD4), which always returns 0 because
-            // func_80312300 (VRetrace check) requires interrupt-driven state.
-            // We bypass the frame gate and call the dispatch sub-functions
-            // directly in the correct order.
-            {
+            // ---- Per-frame dispatch ----
+            // Two modes:
+            //   Forced-boot (default): bypass frame gate + call sub-funcs
+            //     directly in the canonical order. Lets us drive dispatch
+            //     even though the canonical fapGm_Execute would return early
+            //     at the frame-gate check.
+            //   Natural boot (WW_NATURAL_BOOT=1): call fapGm_Execute itself
+            //     (func_800231E4) and let main()/scene_mgr drive everything.
+            //     The frame gate may still block; if so we'll see and react.
+            if (natural_boot) {
+                func_800231E4(&g_ctx, &g_mem);    // fapGm_Execute — natural
+            } else {
                 extern void func_802539A4(PPCContext* ctx, Memory* mem);  // pre-frame setup
                 extern void func_8024135C(PPCContext* ctx, Memory* mem);  // descriptor init
                 extern void func_8003D314(PPCContext* ctx, Memory* mem);  // delete queue
