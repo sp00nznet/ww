@@ -934,6 +934,38 @@ int main(int argc, char** argv) {
             }
         }
 
+        // In natural-boot mode, immediately bridge the freshly allocated
+        // scene into the boot exec list so the dispatcher picks it up.
+        // (Forced-boot mode does this separately via insert_exec_list at
+        // line ~1175.)
+        static const bool natural = std::getenv("WW_NATURAL_BOOT") != nullptr;
+        if (natural) {
+            const uint32_t list_anchor = 0x803BCD60 + 0x0C;
+            const uint32_t node_addr = proc_addr + 0x34;
+            if (mem->read32(node_addr + 4) != list_anchor) {
+                mem->write32(node_addr + 0, 0);
+                mem->write32(node_addr + 4, list_anchor);
+                mem->write32(node_addr + 8, 0);
+                mem->write32(node_addr + 0xC, proc_addr);
+                uint32_t old_head = mem->read32(list_anchor);
+                if (old_head == 0) {
+                    mem->write32(list_anchor,     node_addr);
+                    mem->write32(list_anchor + 4, node_addr);
+                    mem->write32(list_anchor + 8, 1);
+                } else {
+                    uint32_t old_tail = mem->read32(list_anchor + 4);
+                    mem->write32(old_tail + 8, node_addr);
+                    mem->write32(node_addr + 0, old_tail);
+                    mem->write32(list_anchor + 4, node_addr);
+                    uint32_t count = mem->read32(list_anchor + 8);
+                    mem->write32(list_anchor + 8, count + 1);
+                }
+                fprintf(stderr, "[SCN] Bridged natural-boot scene 0x%08X "
+                                "into boot exec list (count=%u)\n",
+                        proc_addr, mem->read32(list_anchor + 8));
+            }
+        }
+
         ctx->r[3] = proc_addr;
 
         fprintf(stderr, "[SCN] Scene process created at 0x%08X (id=%u)\n",
@@ -2531,8 +2563,14 @@ int main(int argc, char** argv) {
                "boot scene create...\n");
         extern void func_80022DF8(PPCContext* ctx, Memory* mem);
         func_80022DF8(&g_ctx, &g_mem);
+        uint32_t root_scene_ptr = g_mem.read32(g_ctx.r[13] - 30488);
         printf("[*] func_80022DF8 returned; root scene ptr (r13-30488) = "
-               "0x%08X\n", g_mem.read32(g_ctx.r[13] - 30488));
+               "0x%08X\n", root_scene_ptr);
+
+        // Note: the actual scene-proc allocation + boot-exec-list bridge
+        // happens inside the func_80022CEC HLE handler when triggered by
+        // the create-request queue processing during the game thread.
+        // See the "natural" path inside the func_80022CEC register_func.
     }
 
     // ---- Launch Game Thread ----
