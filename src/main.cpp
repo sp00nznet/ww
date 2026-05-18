@@ -192,6 +192,17 @@ static const uint32_t RARC_BUF_SIZE_ADDR = 0x817FFE04;
 // chain func_8003CFF0 → func_802412F8 → func_802B0494 (real JKR alloc)
 // is unreachable in our environment because we never initialize the JKR
 // heap structure; this override short-circuits to the bump arena.
+// Diagnostic logger for the patched func_8003D7E0 (layer dispatch).
+extern "C" void ww_log_layer_dispatch(uint32_t callback_addr) {
+    static int s_log = 0;
+    if (s_log < 6) {
+        fprintf(stderr, "[LAYDISP] func_8003D7E0 called cb=0x%08X\n",
+                callback_addr);
+        fflush(stderr);
+        s_log++;
+    }
+}
+
 // Diagnostic logger for the patched func_8003D788 (fpcEx_ToExecuteQ).
 // Each time a process is linked into the dispatch queue, log its address
 // + profile so we can see whether a new actor gets queued.
@@ -2560,6 +2571,9 @@ int main(int argc, char** argv) {
         const uint32_t EXEC_QUEUE = 0x803BCD60;
         g_mem.write32(g_ctx.r[13] - 32608, EXEC_QUEUE);
         g_mem.write32(g_ctx.r[13] - 32604, 16);  // 16 priority lists
+        // Zero the 16 sublist headers (16 * 12 = 192 bytes) so the iterator
+        // doesn't trip over uninitialized count/head fields from BSS.
+        memset(g_mem.translate(EXEC_QUEUE), 0, 16 * 12);
         printf("[*] Natural-boot exec queue ptr set: r13-32608 = 0x%08X\n",
                EXEC_QUEUE);
 
@@ -2756,12 +2770,15 @@ int main(int argc, char** argv) {
             if (natural_boot) {
                 static int s_nb_log = 0;
                 if (s_nb_log < 5) {
-                    fprintf(stderr, "[NB] frame=%d calling fapGm_Execute "
-                            "(q_count=%u sl0=%u r13-32608=0x%08X)\n",
+                    fprintf(stderr, "[NB] frame=%d fapGm_Execute "
+                            "(q_count=%u sl0=%u r13-32608=0x%08X) "
+                            "exec_list[1] count=%u head=0x%08X\n",
                             frame,
-                            g_mem.read32(0x803A72C0 + 44),  // q count
-                            g_mem.read32(0x803BCE20 + 0x40),  // sublayer 0 listA count
-                            g_mem.read32(g_ctx.r[13] - 32608));
+                            g_mem.read32(0x803A72C0 + 44),
+                            g_mem.read32(0x803BCE20 + 0x40),
+                            g_mem.read32(g_ctx.r[13] - 32608),
+                            g_mem.read32(0x803BCD60 + 0x0C + 8),
+                            g_mem.read32(0x803BCD60 + 0x0C + 0));
                     fflush(stderr);
                     s_nb_log++;
                 }
