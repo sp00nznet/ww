@@ -10,6 +10,7 @@
 #include "gcrecomp/runtime.h"
 #include "gcrecomp/yaz0.h"
 #include "gcrecomp/rarc.h"
+#include "gcrecomp/rel.h"
 
 namespace ww {
 
