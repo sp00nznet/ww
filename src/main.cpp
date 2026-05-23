@@ -715,6 +715,156 @@ int main(int argc, char** argv) {
         printf("[*] No disc image (use --iso path.iso for scene loading).\n");
     }
 
+    // ---- FST walk for REL files (WW_LIST_RELS=1) ----
+    // The FST is loaded at 0x81600000 by mount_disc_image. Walk it and
+    // print any file whose name ends in .rel/.str so we know what REL
+    // modules are available on disc.
+    if (std::getenv("WW_LIST_RELS") && ww::is_disc_mounted()) {
+        const uint32_t fst_base = 0x81600000;
+        auto be32 = [&](uint32_t addr) -> uint32_t {
+            return ((uint32_t)g_mem.read8(addr + 0) << 24) |
+                   ((uint32_t)g_mem.read8(addr + 1) << 16) |
+                   ((uint32_t)g_mem.read8(addr + 2) << 8)  |
+                    (uint32_t)g_mem.read8(addr + 3);
+        };
+        // Root entry: byte 0 = 1 (dir marker), bytes 8-11 = total entry count.
+        uint32_t total = be32(fst_base + 8);
+        // String table starts after the entries.
+        uint32_t str_base = fst_base + 12u * total;
+        printf("[FST] %u entries, string table @0x%08X\n",
+               total, str_base);
+        // Walk entries [1..total). Each is 12 bytes.
+        int rels_found = 0;
+        for (uint32_t i = 1; i < total && i < 100000u; ++i) {
+            uint32_t e_addr = fst_base + i * 12u;
+            uint8_t  is_dir = g_mem.read8(e_addr);
+            uint32_t name24 = (((uint32_t)g_mem.read8(e_addr + 1)) << 16) |
+                              (((uint32_t)g_mem.read8(e_addr + 2)) << 8)  |
+                               ((uint32_t)g_mem.read8(e_addr + 3));
+            uint32_t data_off = be32(e_addr + 4);
+            uint32_t data_sz  = be32(e_addr + 8);
+            // Read name from string table.
+            char name[64] = {};
+            for (int k = 0; k < 63; ++k) {
+                uint8_t c = g_mem.read8(str_base + name24 + (uint32_t)k);
+                if (c == 0) break;
+                name[k] = (char)c;
+            }
+            // Look for .rel or .str extensions on files.
+            if (is_dir == 0) {
+                size_t nl = strlen(name);
+                bool match = (nl > 4) &&
+                    ((strncmp(name + nl - 4, ".rel", 4) == 0) ||
+                     (strncmp(name + nl - 4, ".str", 4) == 0) ||
+                     (strncmp(name + nl - 4, ".REL", 4) == 0));
+                if (match) {
+                    printf("[FST]   '%s' off=0x%08X size=%u\n",
+                           name, data_off, data_sz);
+                    rels_found++;
+                }
+            }
+        }
+        printf("[FST] %d REL-candidate files on disc\n", rels_found);
+        fflush(stdout);
+    }
+
+    // ---- Parse a specific REL from disc (WW_PARSE_REL=name) ----
+    // Locate the named file in the FST, read its bytes via disc_read,
+    // and parse with the gcrecomp REL loader. Prints structure stats —
+    // proves the REL pipeline works end-to-end on real WW data.
+    if (const char* want = std::getenv("WW_PARSE_REL")) {
+        if (!ww::is_disc_mounted()) {
+            printf("[REL-TEST] No disc mounted; cannot read REL.\n");
+        } else {
+            const uint32_t fst_base = 0x81600000;
+            auto be32 = [&](uint32_t addr) -> uint32_t {
+                return ((uint32_t)g_mem.read8(addr + 0) << 24) |
+                       ((uint32_t)g_mem.read8(addr + 1) << 16) |
+                       ((uint32_t)g_mem.read8(addr + 2) << 8)  |
+                        (uint32_t)g_mem.read8(addr + 3);
+            };
+            uint32_t total = be32(fst_base + 8);
+            uint32_t str_base = fst_base + 12u * total;
+            uint32_t found_off = 0, found_sz = 0;
+            for (uint32_t i = 1; i < total; ++i) {
+                uint32_t e_addr = fst_base + i * 12u;
+                if (g_mem.read8(e_addr) != 0) continue;  // skip dirs
+                uint32_t name24 = (((uint32_t)g_mem.read8(e_addr + 1)) << 16) |
+                                  (((uint32_t)g_mem.read8(e_addr + 2)) << 8)  |
+                                   ((uint32_t)g_mem.read8(e_addr + 3));
+                char name[64] = {};
+                for (int k = 0; k < 63; ++k) {
+                    uint8_t c = g_mem.read8(str_base + name24 + (uint32_t)k);
+                    if (c == 0) break;
+                    name[k] = (char)c;
+                }
+                if (strcmp(name, want) == 0) {
+                    found_off = be32(e_addr + 4);
+                    found_sz  = be32(e_addr + 8);
+                    break;
+                }
+            }
+            if (!found_off) {
+                printf("[REL-TEST] '%s' not found on disc.\n", want);
+            } else {
+                printf("[REL-TEST] '%s' found: off=0x%08X size=%u — reading...\n",
+                       want, found_off, found_sz);
+                std::vector<uint8_t> buf(found_sz);
+                size_t got = ww::disc_read(found_off, buf.data(), found_sz);
+                if (got != found_sz) {
+                    printf("[REL-TEST] short read: %zu / %u\n", got, found_sz);
+                } else {
+                    // Dump first 32 bytes to see what we actually got.
+                    printf("[REL-TEST] First 32 bytes: ");
+                    for (size_t i = 0; i < 32 && i < got; ++i) {
+                        printf("%02X ", buf[i]);
+                    }
+                    printf("\n");
+                    printf("[REL-TEST] ASCII: ");
+                    for (size_t i = 0; i < 32 && i < got; ++i) {
+                        char c = (char)buf[i];
+                        printf("%c", (c >= 0x20 && c < 0x7F) ? c : '.');
+                    }
+                    printf("\n");
+                    // Detect Yaz0 magic.
+                    bool yaz0 = got >= 4 && buf[0] == 'Y' && buf[1] == 'a' &&
+                                buf[2] == 'z' && buf[3] == '0';
+                    if (yaz0) {
+                        printf("[REL-TEST] Yaz0-compressed; decompressing...\n");
+                        // Use gcrecomp's Yaz0 implementation.
+                        uint32_t out_sz = (uint32_t(buf[4]) << 24) |
+                                          (uint32_t(buf[5]) << 16) |
+                                          (uint32_t(buf[6]) << 8)  |
+                                           uint32_t(buf[7]);
+                        std::vector<uint8_t> out(out_sz);
+                        if (gcrecomp::yaz0_decompress(buf.data(), buf.size(),
+                                                      out.data(), out.size())) {
+                            printf("[REL-TEST] Decompressed to %u bytes\n", out_sz);
+                            gcrecomp::RELFile rel;
+                            if (rel.load_from_buffer(out.data(), out.size(), want)) {
+                                printf("[REL-TEST] Parse OK.\n");
+                                rel.print_info();
+                            } else {
+                                printf("[REL-TEST] Parse FAILED after decompress.\n");
+                            }
+                        } else {
+                            printf("[REL-TEST] Yaz0 decompress failed.\n");
+                        }
+                    } else {
+                        gcrecomp::RELFile rel;
+                        if (rel.load_from_buffer(buf.data(), buf.size(), want)) {
+                            printf("[REL-TEST] Parse OK.\n");
+                            rel.print_info();
+                        } else {
+                            printf("[REL-TEST] Parse FAILED.\n");
+                        }
+                    }
+                }
+            }
+        }
+        fflush(stdout);
+    }
+
     // ---- Set CPU registers from __init_registers (func_80003278) ----
     g_ctx.r[1]  = 0x8040CFA8;  // Stack pointer
     g_ctx.r[2]  = 0x803FFD00;  // SDA2 base (_SDA2_BASE_)
