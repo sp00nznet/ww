@@ -304,6 +304,23 @@ extern "C" int ww_spawn_test_active() {
     return active;
 }
 
+// Used by recompiled patches that behave differently in natural-boot mode.
+extern "C" int ww_natural_boot_active() {
+    static const int active = std::getenv("WW_NATURAL_BOOT") ? 1 : 0;
+    return active;
+}
+
+// Trace func_800404CC entry (restored draw-dispatch path in natural boot).
+extern "C" void ww_log_draw_dispatch(uint32_t cb, uint32_t arg) {
+    static int s_log = 0;
+    if (s_log < 5) {
+        fprintf(stderr, "[DRAWDISP] func_800404CC(cb=0x%08X, arg=0x%08X)\n",
+                cb, arg);
+        fflush(stderr);
+        s_log++;
+    }
+}
+
 // Open the frame gate (func_8003EBD4) so fapGm_Execute can run dispatch
 // without needing VBlank interrupt simulation. Only used in natural-boot
 // mode where main() is driving its own loop.
