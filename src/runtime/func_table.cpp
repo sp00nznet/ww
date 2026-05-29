@@ -16,8 +16,12 @@ FuncTable g_func_table;
 bool runtime_init() {
     printf("[Runtime] Initializing Wind Waker runtime...\n");
 
-    // Initialize memory (provided by gcrecomp)
-    if (!g_mem.init()) return false;
+    // Initialize memory (provided by gcrecomp).
+    // 64 MB lets us host the standard 24 MB main RAM (0x80000000-0x81800000)
+    // plus relocated REL data sections, which the recompiler places starting
+    // at 0x82000000+. Without the extra room the prologs blow up on the very
+    // first lwz of their static profile descriptor.
+    if (!g_mem.init(64 * 1024 * 1024)) return false;
 
     // Initialize CPU context
     g_ctx.reset();

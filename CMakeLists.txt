@@ -90,6 +90,9 @@ if(WW_BUILD_RUNTIME)
         gcrecomp_gx
         gcrecomp_audio
         gcrecomp_input
+        # gcrecomp_tools provides DOLFile::load + rel_to_dol; needed at runtime
+        # so the REL data loader can re-apply relocations into emulated memory.
+        gcrecomp_tools
     )
     if(TARGET ww_recompiled)
         target_link_libraries(ww_launcher PRIVATE ww_recompiled)
