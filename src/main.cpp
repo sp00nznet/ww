@@ -2036,6 +2036,21 @@ int main(int argc, char** argv) {
         printf("[*] Process tree populated.\n");
     }
     }  // end !natural_boot
+
+    // Even under natural boot, the per-frame scene execute (func_801942E0)
+    // compares the current-stage string at 0x803C9D2C against "sea" — if
+    // they don't match it skips the whole scene step, the boot logic never
+    // sees the stage as loaded, and nothing spawns d_a_title. The forced
+    // path wrote this inside the forced block; lift it out so the natural
+    // path doesn't fall into the empty-stage trap.
+    {
+        uint32_t stage_name_addr = 0x803C9D2C;
+        g_mem.write8(stage_name_addr + 0, 's');
+        g_mem.write8(stage_name_addr + 1, 'e');
+        g_mem.write8(stage_name_addr + 2, 'a');
+        g_mem.write8(stage_name_addr + 3, 0);
+    }
+
     fflush(stdout);
 
     // Process any DVD requests enqueued during framework init.
