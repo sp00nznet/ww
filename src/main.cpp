@@ -11,6 +11,7 @@
 
 #include "ww/runtime.h"
 #include "ww/dol.h"
+#include "gcrecomp/dol.h"
 #include "ww/gx/gx.h"
 #include "ww/audio/audio.h"
 #include "ww/input/input.h"
@@ -414,6 +415,122 @@ static void dvd_read_from_disc(PPCContext* ctx, Memory* mem) {
     fprintf(stderr, "[DVD] Read failed: buf=0x%08X off=0x%08X len=%u\n",
             buf_addr, offset, (unsigned)length);
     ctx->r[3] = 0;
+}
+
+// Find a file in the mounted disc image's FST and read its bytes.
+// The FST is laid out at 0x81600000 by mount_disc_image; this walks the
+// flat entry array and matches by basename (case-sensitive). Returns
+// false if the disc isn't mounted or the name doesn't appear.
+static bool fst_read_file(const char* name, Memory& mem,
+                          std::vector<uint8_t>& out) {
+    if (!ww::is_disc_mounted()) return false;
+    const uint32_t fst_base = 0x81600000;
+    auto be32 = [&](uint32_t addr) -> uint32_t {
+        return ((uint32_t)mem.read8(addr + 0) << 24) |
+               ((uint32_t)mem.read8(addr + 1) << 16) |
+               ((uint32_t)mem.read8(addr + 2) << 8)  |
+                (uint32_t)mem.read8(addr + 3);
+    };
+    uint32_t total    = be32(fst_base + 8);
+    uint32_t str_base = fst_base + 12u * total;
+    for (uint32_t i = 1; i < total; ++i) {
+        uint32_t e_addr = fst_base + i * 12u;
+        if (mem.read8(e_addr) != 0) continue;  // skip directories
+        uint32_t name24 = ((uint32_t)mem.read8(e_addr + 1) << 16) |
+                          ((uint32_t)mem.read8(e_addr + 2) << 8)  |
+                           (uint32_t)mem.read8(e_addr + 3);
+        char buf[128] = {};
+        for (int k = 0; k < 127; ++k) {
+            uint8_t c = mem.read8(str_base + name24 + (uint32_t)k);
+            if (c == 0) break;
+            buf[k] = (char)c;
+        }
+        if (strcmp(buf, name) != 0) continue;
+        uint32_t off = be32(e_addr + 4);
+        uint32_t sz  = be32(e_addr + 8);
+        out.resize(sz);
+        size_t got = gcrecomp::disc_read(off, out.data(), sz);
+        if (got != sz) {
+            fprintf(stderr, "[FST] '%s' short read: %zu/%u\n", name, got, sz);
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Read a REL from the mounted disc image, apply its relocations using the
+// recompiler's rel_to_dol routine, and copy the relocated bytes of every
+// section into emulated memory at the recompile-time VAs.
+//
+// This is the data-side counterpart to rel_<name>_register: the register
+// fn binds CODE addresses, this loader binds the corresponding DATA
+// addresses so the prologs' static lookups (lis/addi + lwz) hit real bytes.
+//
+// `host_dol` lets us resolve R_PPC_ADDR relocs against the main DOL.
+// `disc_name` (e.g., d_a_title.rel) is the basename inside the disc FST.
+static bool load_rel_into_memory(const char* disc_name,
+                                 uint32_t base_addr,
+                                 const gcrecomp::DOLFile& host_dol,
+                                 Memory& mem) {
+    std::vector<uint8_t> bytes;
+    if (!fst_read_file(disc_name, mem, bytes)) {
+        fprintf(stderr, "[REL] FST read failed: %s\n", disc_name);
+        return false;
+    }
+
+    // RELs on disc are Yaz0-wrapped. Detect and decompress in-place.
+    if (bytes.size() >= 4 && bytes[0] == 'Y' && bytes[1] == 'a' &&
+                              bytes[2] == 'z' && bytes[3] == '0') {
+        uint32_t out_sz = (uint32_t(bytes[4]) << 24) |
+                          (uint32_t(bytes[5]) << 16) |
+                          (uint32_t(bytes[6]) << 8)  |
+                           uint32_t(bytes[7]);
+        std::vector<uint8_t> dec(out_sz);
+        if (!gcrecomp::yaz0_decompress(bytes.data(), bytes.size(),
+                                        dec.data(), dec.size())) {
+            fprintf(stderr, "[REL] Yaz0 decompress failed: %s\n", disc_name);
+            return false;
+        }
+        bytes = std::move(dec);
+    }
+
+    gcrecomp::RELFile rel;
+    if (!rel.load_from_buffer(bytes.data(), bytes.size(), disc_name)) {
+        fprintf(stderr, "[REL] parse failed: %s\n", disc_name);
+        return false;
+    }
+
+    // rel_to_dol lays each REL section sequentially from base_addr, applying
+    // R_PPC_ADDR/REL relocs internally and against host_dol where module_id==0.
+    // External-module relocs (other RELs) are left as zero; that matches the
+    // recompile-time view, so the recompiled code's hard-coded extern stubs
+    // line up with what the data section thinks the call targets are.
+    gcrecomp::DOLFile relocated;
+    if (!gcrecomp::rel_to_dol(rel, base_addr, &host_dol, relocated)) {
+        fprintf(stderr, "[REL] relocation failed: %s\n", disc_name);
+        return false;
+    }
+
+    // Write each section into emulated memory at its placement address.
+    size_t total_bytes = 0;
+    for (size_t i = 0; i < relocated.sections.size(); ++i) {
+        const gcrecomp::DOLSection& sec = relocated.sections[i];
+        if (sec.data.empty() || sec.address == 0) continue;
+        size_t sz = sec.data.size();
+        if (sec.address < Memory::MAIN_RAM_BASE ||
+            sec.address + sz > Memory::MAIN_RAM_BASE + mem.ram_size) {
+            fprintf(stderr, "[REL] %s sec[%d] @0x%08X outside emulated RAM\n",
+                    disc_name, sec.index, sec.address);
+            return false;
+        }
+        memcpy(mem.translate(sec.address), sec.data.data(), sz);
+        total_bytes += sz;
+    }
+
+    printf("[REL] Loaded %s @ 0x%08X (%zu bytes across %zu sections)\n",
+           disc_name, base_addr, total_bytes, relocated.sections.size());
+    return true;
 }
 
 // Load DOL sections into emulated memory
@@ -900,6 +1017,24 @@ int main(int argc, char** argv) {
     extern void rel_d_a_title_register(ww::FuncTable& table);
     rel_d_a_title_register(g_func_table);
     printf("[*] Registered REL: d_a_title (27 functions @ 0x82100000+)\n");
+
+    // Before the prologs run, copy each REL's *data* sections into emulated
+    // memory at their recompile-time VAs. The recompiled C only covers code;
+    // without this, the prolog's static lis/addi + lwz of its profile
+    // descriptor falls into uninitialized memory (the source of the boot-
+    // time "Bad address: 0x82000EE0" warnings).
+    //
+    // Skipped silently when the disc isn't mounted (e.g. no --iso flag) —
+    // then the prologs still get called but their effect is best-effort.
+    if (ww::is_disc_mounted()) {
+        gcrecomp::DOLFile host_dol;
+        if (host_dol.load(dol_path)) {
+            (void)load_rel_into_memory("d_a_acorn_leaf.rel", 0x82000000,
+                                       host_dol, g_mem);
+            (void)load_rel_into_memory("d_a_title.rel",      0x82100000,
+                                       host_dol, g_mem);
+        }
+    }
 
     // Invoke each registered REL's prolog at boot, before the game thread
     // starts. The real engine path would discover these via dRes_LoadInit
