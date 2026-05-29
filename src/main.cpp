@@ -901,20 +901,26 @@ int main(int argc, char** argv) {
     rel_d_a_title_register(g_func_table);
     printf("[*] Registered REL: d_a_title (27 functions @ 0x82100000+)\n");
 
-    // WW_CALL_REL_PROLOG=1 invokes the freshly recompiled REL's prolog
-    // (func_82000000) once at boot, before the game thread starts.
-    // Smoke test: verifies the REL's static recompilation actually runs
-    // end-to-end (internal calls bound, external calls resolved).
-    if (std::getenv("WW_CALL_REL_PROLOG")) {
-        // Use a clean ctx scratch so we don't perturb game state.
+    // Invoke each registered REL's prolog at boot, before the game thread
+    // starts. The real engine path would discover these via dRes_LoadInit
+    // → OSLink, but we're standing in for that: the prolog is what self-
+    // registers the module's profile with the framework, and once it has
+    // run the engine sees the REL as "loaded" from then on.
+    //
+    // WW_SKIP_REL_PROLOG=1 disables this for A/B comparison (useful when
+    // bisecting whether a regression is caused by the REL or the engine).
+    if (!std::getenv("WW_SKIP_REL_PROLOG")) {
+        // Run prologs against a scratch context so a misbehaving prolog
+        // cannot corrupt the game-loop register state. r1 borrows an
+        // otherwise-unused stack region so internal saves go somewhere.
         auto call_prolog = [&](const char* name, uint32_t addr,
                                void (*fn)(PPCContext*, Memory*)) {
-            printf("[REL-SMOKE] Calling %s prolog (0x%08X)...\n", name, addr);
+            printf("[REL-LOAD] Running %s prolog (0x%08X)...\n", name, addr);
             fflush(stdout);
             PPCContext scratch = g_ctx;
             scratch.r[1] = 0x80700000;
             fn(&scratch, &g_mem);
-            printf("[REL-SMOKE]   Returned without crash. r3=0x%08X\n",
+            printf("[REL-LOAD]   Prolog returned r3=0x%08X — module loaded\n",
                    (uint32_t)scratch.r[3]);
             fflush(stdout);
         };
