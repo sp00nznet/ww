@@ -40,6 +40,13 @@ assets/extracted/
 
 # Game files - additional
 main.dol
+main.elf
+
+# Ghidra project + per-machine analysis outputs
+tools/ghidra/project/
+tools/ghidra/out/
+tools/ghidra/run.log
+tools/ghidra/run.log.err
 
 # Diagnostic captures and screenshots
 dolphin_*.bin
