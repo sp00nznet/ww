@@ -840,6 +840,23 @@ int main(int argc, char** argv) {
                         if (gcrecomp::yaz0_decompress(buf.data(), buf.size(),
                                                       out.data(), out.size())) {
                             printf("[REL-TEST] Decompressed to %u bytes\n", out_sz);
+                            // Optional: save the decompressed REL to disk
+                            // so the recompiler tool can be tested on it.
+                            if (const char* dump_dir = std::getenv("WW_REL_DUMP_DIR")) {
+                                char outpath[512];
+                                snprintf(outpath, sizeof(outpath),
+                                         "%s/%s", dump_dir, want);
+                                FILE* of = fopen(outpath, "wb");
+                                if (of) {
+                                    fwrite(out.data(), 1, out.size(), of);
+                                    fclose(of);
+                                    printf("[REL-TEST] Saved decompressed REL "
+                                           "to %s\n", outpath);
+                                } else {
+                                    printf("[REL-TEST] Could not write %s\n",
+                                           outpath);
+                                }
+                            }
                             gcrecomp::RELFile rel;
                             if (rel.load_from_buffer(out.data(), out.size(), want)) {
                                 printf("[REL-TEST] Parse OK.\n");
@@ -873,6 +890,30 @@ int main(int argc, char** argv) {
     // ---- Register Recompiled Functions ----
     printf("[*] Registering recompiled functions...\n");
     register_recompiled_functions(g_func_table);
+
+    // Register REL modules. Each rel_<name>_register call adds the REL's
+    // functions to the func table at their virtual addresses (base 0x82xxxxxx).
+    extern void rel_d_a_acorn_leaf_register(ww::FuncTable& table);
+    rel_d_a_acorn_leaf_register(g_func_table);
+    printf("[*] Registered REL: d_a_acorn_leaf (46 functions @ 0x82000000+)\n");
+
+    // WW_CALL_REL_PROLOG=1 invokes the freshly recompiled REL's prolog
+    // (func_82000000) once at boot, before the game thread starts.
+    // Smoke test: verifies the REL's static recompilation actually runs
+    // end-to-end (internal calls bound, external calls resolved).
+    if (std::getenv("WW_CALL_REL_PROLOG")) {
+        extern void func_82000000(PPCContext* ctx, Memory* mem);
+        printf("[REL-SMOKE] Calling rel_d_a_acorn_leaf prolog (0x82000000)...\n");
+        fflush(stdout);
+        // Use a clean ctx scratch so we don't perturb game state.
+        PPCContext scratch = g_ctx;
+        scratch.r[1] = 0x80700000;  // borrow a stack region clear of others
+        func_82000000(&scratch, &g_mem);
+        printf("[REL-SMOKE] Returned without crash. r3=0x%08X\n",
+               (uint32_t)scratch.r[3]);
+        fflush(stdout);
+    }
+
 
     // ---- Initialize Graphics ----
     printf("[*] Initializing graphics (D3D11)...\n");

@@ -63,7 +63,9 @@ if(WW_BUILD_RUNTIME)
     # ===========================================================================
     option(WW_BUILD_RECOMPILED "Build the recompiled game code" ON)
     if(WW_BUILD_RECOMPILED AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/recompiled/recomp_funcs.h")
-        file(GLOB RECOMP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/recompiled/recomp_*.cpp")
+        file(GLOB RECOMP_SOURCES
+             "${CMAKE_CURRENT_SOURCE_DIR}/recompiled/recomp_*.cpp"
+             "${CMAKE_CURRENT_SOURCE_DIR}/recompiled/rel_*.cpp")
         add_library(ww_recompiled STATIC ${RECOMP_SOURCES})
         target_include_directories(ww_recompiled PRIVATE
             include
