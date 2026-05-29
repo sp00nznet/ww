@@ -892,26 +892,38 @@ int main(int argc, char** argv) {
     register_recompiled_functions(g_func_table);
 
     // Register REL modules. Each rel_<name>_register call adds the REL's
-    // functions to the func table at their virtual addresses (base 0x82xxxxxx).
+    // functions to the func table at their virtual addresses.
     extern void rel_d_a_acorn_leaf_register(ww::FuncTable& table);
     rel_d_a_acorn_leaf_register(g_func_table);
     printf("[*] Registered REL: d_a_acorn_leaf (46 functions @ 0x82000000+)\n");
+
+    extern void rel_d_a_title_register(ww::FuncTable& table);
+    rel_d_a_title_register(g_func_table);
+    printf("[*] Registered REL: d_a_title (27 functions @ 0x82100000+)\n");
 
     // WW_CALL_REL_PROLOG=1 invokes the freshly recompiled REL's prolog
     // (func_82000000) once at boot, before the game thread starts.
     // Smoke test: verifies the REL's static recompilation actually runs
     // end-to-end (internal calls bound, external calls resolved).
     if (std::getenv("WW_CALL_REL_PROLOG")) {
-        extern void func_82000000(PPCContext* ctx, Memory* mem);
-        printf("[REL-SMOKE] Calling rel_d_a_acorn_leaf prolog (0x82000000)...\n");
-        fflush(stdout);
         // Use a clean ctx scratch so we don't perturb game state.
-        PPCContext scratch = g_ctx;
-        scratch.r[1] = 0x80700000;  // borrow a stack region clear of others
-        func_82000000(&scratch, &g_mem);
-        printf("[REL-SMOKE] Returned without crash. r3=0x%08X\n",
-               (uint32_t)scratch.r[3]);
-        fflush(stdout);
+        auto call_prolog = [&](const char* name, uint32_t addr,
+                               void (*fn)(PPCContext*, Memory*)) {
+            printf("[REL-SMOKE] Calling %s prolog (0x%08X)...\n", name, addr);
+            fflush(stdout);
+            PPCContext scratch = g_ctx;
+            scratch.r[1] = 0x80700000;
+            fn(&scratch, &g_mem);
+            printf("[REL-SMOKE]   Returned without crash. r3=0x%08X\n",
+                   (uint32_t)scratch.r[3]);
+            fflush(stdout);
+        };
+
+        extern void func_82000000(PPCContext* ctx, Memory* mem);
+        call_prolog("rel_d_a_acorn_leaf", 0x82000000, func_82000000);
+
+        extern void func_82100000(PPCContext* ctx, Memory* mem);
+        call_prolog("rel_d_a_title",      0x82100000, func_82100000);
     }
 
 
