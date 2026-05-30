@@ -533,6 +533,69 @@ static bool load_rel_into_memory(const char* disc_name,
     return true;
 }
 
+// After load_rel_into_memory has written a REL's data into emulated RAM,
+// scan it for a process_profile_definition struct and patch the framework
+// profile lookup array at 0x803B92D8 so fpcPf_Get(name) can resolve the
+// REL's profile. WW's layout (verified empirically on d_a_title @ 0x82102060):
+//   +0x00  u32 layer_id              (often 0xFFFFFFFD = LAYER_DEFAULT)
+//   +0x04  u16 list_id
+//   +0x06  u16 list_priority
+//   +0x08  s16 name                  <- index into the lookup array
+//   +0x0A  u16 (pad)
+//   +0x0C  process_method_class* parent_vtable_a  (DOL pointer)
+//   +0x10  u32 process_size
+//   +0x14  u32 unk
+//   +0x18  u32 unk2
+//   +0x1C  process_method_class* parent_vtable_b  (DOL pointer)
+//   +0x20  u32 parameters
+//   +0x24  process_method_class* methods         (self-ref into REL)
+//
+// Pattern recognition: name in 0x0001..0x0FFF, parent_vtable_a in the DOL
+// range, methods at +0x24 inside the same REL window, process_size sane.
+// First match wins — actor RELs only have one profile each.
+//
+// Returns the patched name index on success, -1 on no match.
+static int register_rel_profile(const char* disc_name,
+                                uint32_t base_addr,
+                                Memory& mem,
+                                uint32_t scan_bytes = 0x4000) {
+    const uint32_t LOOKUP_BASE = 0x803B92D8;
+    const uint32_t LOOKUP_LEN  = 502;
+    for (uint32_t off = 0; off + 0x28 < scan_bytes; off += 4) {
+        uint32_t addr = base_addr + off;
+        uint16_t name        = mem.read16(addr + 0x08);
+        uint32_t vparent_a   = mem.read32(addr + 0x0C);
+        uint32_t proc_size   = mem.read32(addr + 0x10);
+        uint32_t vparent_b   = mem.read32(addr + 0x1C);
+        uint32_t methods_ptr = mem.read32(addr + 0x24);
+        if (name == 0 || name >= LOOKUP_LEN) continue;
+        if (vparent_a < 0x80000000 || vparent_a >= 0x80400000) continue;
+        if (vparent_b < 0x80000000 || vparent_b >= 0x80400000) continue;
+        if (methods_ptr < base_addr ||
+            methods_ptr >= base_addr + scan_bytes) continue;
+        if (proc_size == 0 || proc_size > 0x4000) continue;
+
+        uint32_t slot = LOOKUP_BASE + (uint32_t)name * 4;
+        uint32_t existing = mem.read32(slot);
+        if (existing != 0 && existing < 0x82000000) {
+            // Slot already holds a DOL-side descriptor; bailing keeps us
+            // from clobbering a real game profile if the heuristic misfires.
+            printf("[REL] %s profile 0x%04X already occupied by 0x%08X — "
+                   "leaving alone\n", disc_name, name, existing);
+            return -1;
+        }
+        mem.write32(slot, addr);
+        printf("[REL] %s registered profile 0x%04X -> descriptor 0x%08X "
+               "(slot 0x%08X) size=0x%X methods=0x%08X parents=0x%08X/0x%08X\n",
+               disc_name, name, addr, slot, proc_size,
+               methods_ptr, vparent_a, vparent_b);
+        return (int)name;
+    }
+    printf("[REL] %s: no profile_definition pattern found in %u bytes "
+           "from 0x%08X\n", disc_name, scan_bytes, base_addr);
+    return -1;
+}
+
 // Load DOL sections into emulated memory
 static bool load_dol_into_memory(const char* path, Memory& mem) {
     ww::DOLFile dol;
@@ -1029,10 +1092,14 @@ int main(int argc, char** argv) {
     if (ww::is_disc_mounted()) {
         gcrecomp::DOLFile host_dol;
         if (host_dol.load(dol_path)) {
-            (void)load_rel_into_memory("d_a_acorn_leaf.rel", 0x82000000,
-                                       host_dol, g_mem);
-            (void)load_rel_into_memory("d_a_title.rel",      0x82100000,
-                                       host_dol, g_mem);
+            if (load_rel_into_memory("d_a_acorn_leaf.rel", 0x82000000,
+                                     host_dol, g_mem)) {
+                register_rel_profile("d_a_acorn_leaf.rel", 0x82000000, g_mem);
+            }
+            if (load_rel_into_memory("d_a_title.rel", 0x82100000,
+                                     host_dol, g_mem)) {
+                register_rel_profile("d_a_title.rel", 0x82100000, g_mem);
+            }
         }
     }
 
@@ -1604,6 +1671,80 @@ int main(int argc, char** argv) {
     func_80022DF8(&g_ctx, &g_mem);
     printf("[*] Game framework initialized.\n");
     dump_item("after post-init");
+
+    // WW_DUMP_PROFTBL=1: snapshot the framework's profile bookkeeping after
+    // post-init has run. Two tables of interest:
+    //   0x80339998 — static profile descriptor list (DOL data). Each entry is
+    //                8 bytes: u16 name (offset 0), u16 pad, u32 desc_ptr (+4).
+    //                430 entries based on the func_80022810 init loop.
+    //   0x803B92D8 — runtime profile lookup. 502 slots × 4-byte pointer,
+    //                indexed by profile name. Populated by the same init loop.
+    // We dump non-zero entries from both so we can map name → descriptor and
+    // identify which slots are empty (= REL-provided profiles waiting for us
+    // to fill them in load_rel_into_memory).
+    if (std::getenv("WW_DUMP_PROFTBL")) {
+        printf("[PROFTBL] === static list @0x80339998 (430 entries × 8) ===\n");
+        const uint32_t STATIC_LIST = 0x80339998;
+        int dol_descs = 0, rel_descs = 0, null_descs = 0;
+        for (int i = 0; i < 430; ++i) {
+            uint32_t e = STATIC_LIST + i * 8;
+            uint16_t name = (uint16_t)g_mem.read16(e + 0);
+            uint32_t dp   = g_mem.read32(e + 4);
+            if (name == 0 && dp == 0) continue;
+            const char* zone =
+                (dp == 0)                ? "NULL"  :
+                (dp >= 0x80000000 && dp < 0x80400000) ? "DOL"   :
+                (dp >= 0x82000000 && dp < 0x82400000) ? "REL"   :
+                                                        "?";
+            if (dp == 0) null_descs++;
+            else if (dp < 0x80400000) dol_descs++;
+            else rel_descs++;
+            if (i < 30 || dp == 0 || dp >= 0x82000000) {
+                printf("[PROFTBL]   [%3d] name=0x%04X desc=0x%08X (%s)\n",
+                       i, name, dp, zone);
+            }
+        }
+        printf("[PROFTBL] static totals: %d DOL, %d REL, %d NULL\n",
+               dol_descs, rel_descs, null_descs);
+
+        printf("[PROFTBL] === lookup array @0x803B92D8 (502 slots × 4) ===\n");
+        const uint32_t LOOKUP = 0x803B92D8;
+        int dl_full = 0, dl_rel = 0;
+        for (int n = 0; n < 502; ++n) {
+            uint32_t dp = g_mem.read32(LOOKUP + n * 4);
+            if (dp == 0) continue;
+            dl_full++;
+            if (dp >= 0x82000000 && dp < 0x82400000) dl_rel++;
+            // Only print first few and any REL-pointing slots so we can spot
+            // which profile-name index corresponds to a loaded REL.
+            if (n < 20 || dp >= 0x82000000) {
+                printf("[PROFTBL]   array[%3d] = 0x%08X%s\n",
+                       n, dp, (dp >= 0x82000000) ? " <-- REL" : "");
+            }
+        }
+        printf("[PROFTBL] lookup totals: %d filled (%d pointing into REL space)\n",
+               dl_full, dl_rel);
+
+        // Section 5 dump for the title REL: the recompiler's REL→DOL
+        // layout places sections sequentially after section 1. For
+        // d_a_title (sizes from header: s1=0x1E4C, s2=4, s3=4, s4=0x1DC,
+        // s5=0xA0) at base 0x82100000, section 5 starts somewhere around
+        // 0x82102040 after alignment — but our rel_to_dol applies the
+        // section_addresses internally; safer to scan a small window of
+        // emulated memory at 0x82102000..0x82102200 looking for the
+        // 14 relocated ADDR32 slots we know section 5 carries.
+        printf("[PROFTBL] === title REL section 5 candidate dump ===\n");
+        for (uint32_t addr = 0x82102000; addr < 0x82102200; addr += 16) {
+            uint32_t w0 = g_mem.read32(addr + 0);
+            uint32_t w1 = g_mem.read32(addr + 4);
+            uint32_t w2 = g_mem.read32(addr + 8);
+            uint32_t w3 = g_mem.read32(addr + 12);
+            if ((w0 | w1 | w2 | w3) == 0) continue;
+            printf("[PROFTBL]   0x%08X: %08X %08X %08X %08X\n",
+                   addr, w0, w1, w2, w3);
+        }
+        fflush(stdout);
+    }
 
     // Diagnostic: check creation queue and process tree state
     {
@@ -2798,6 +2939,15 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+        } else if (strcmp(spawn_mode, "title") == 0) {
+            // Title screen spawn — registers profile 0x01C1 (d_a_title) via
+            // the same direct_spawn path. Position is zero since the title
+            // actor is a screen-space overlay (the menu, not a world object).
+            printf("[SPAWN-TEST] d_a_title (profile 0x01C1)...\n");
+            ActrEntry a = {};
+            strcpy(a.name, "Title");
+            uint32_t proc = enqueue_one(a, 0x01C1);
+            printf("[SPAWN-TEST]   d_a_title proc=0x%08X\n", proc);
         } else {
             // Single-actor smoke test (woodbx hardcoded position).
             printf("[SPAWN-TEST] Single woodbx (profile 0x010C)...\n");
