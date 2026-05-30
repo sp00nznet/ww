@@ -2948,6 +2948,27 @@ int main(int argc, char** argv) {
             strcpy(a.name, "Title");
             uint32_t proc = enqueue_one(a, 0x01C1);
             printf("[SPAWN-TEST]   d_a_title proc=0x%08X\n", proc);
+
+            // direct_spawn forces init_state=2 to make the dispatcher accept
+            // the process, but that *skips* the title's create_method, which
+            // is where the actor allocates its 0x210-byte state struct and
+            // wires up the menu logo. Run create_method manually so the
+            // title actor reaches a renderable state instead of executing
+            // on zero memory.
+            if (proc) {
+                ScopedAllocOverride alloc_guard;
+                printf("[SPAWN-TEST]   Calling d_a_title create_method "
+                       "(0x82101D70)...\n");
+                fflush(stdout);
+                g_ctx.r[3] = proc;
+                extern void func_82101D70(PPCContext* ctx, Memory* mem);
+                func_82101D70(&g_ctx, &g_mem);
+                uint32_t state_buf = g_mem.read32(proc + 664);
+                printf("[SPAWN-TEST]   create returned r3=0x%08X, "
+                       "title state buf @proc+664 = 0x%08X\n",
+                       (uint32_t)g_ctx.r[3], state_buf);
+                fflush(stdout);
+            }
         } else {
             // Single-actor smoke test (woodbx hardcoded position).
             printf("[SPAWN-TEST] Single woodbx (profile 0x010C)...\n");
