@@ -353,6 +353,12 @@ extern "C" uint32_t ww_bump_alloc_host(int32_t align, uint32_t size) {
     uint32_t end = aligned + size;
     if (end > BUMP_ALLOC_END) return 0;
     g_bump_alloc_ptr = end;
+    // Zero the allocation. Real JKRHeap::alloc returns uninitialized memory
+    // too, but every WW caller that reaches our HLE path is a C++ ctor that
+    // expects zero-init (the prior allocator left stale data, which is why
+    // title's downstream init was reading 1.0f-bit-pattern pointers and
+    // other garbage as object fields).
+    memset(g_mem.translate(aligned), 0, size);
     return aligned;
 }
 
