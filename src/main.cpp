@@ -1626,6 +1626,34 @@ int main(int argc, char** argv) {
         g_mem.write32(g_ctx.r[13] - 27984, mgr_addr);
         printf("[*]   Scene manager at 0x%08X\n", mgr_addr);
 
+        // Scene-state object — pointed to by r13-26608. The scene_class
+        // execute method (0x802558CC, vtable @ 0x80395C20 + 8) reads
+        // state at +0x10 and dispatches:
+        //   state 0 → idle no-op
+        //   state 1 → setup path (sub_80255F60)
+        //   state 2 → running (sub_80255570)
+        //   state 3 → rotate sub-state (sub_80255658)
+        // Without this pointer the dispatcher reads NULL → undefined.
+        // Start in state 1 so the setup path runs and moves us forward.
+        // Layout (per IDA decompile of sub_80255570):
+        //   +0x00..0x0C: scene config (vtable, parent ptrs)
+        //   +0x10  DWORD  main state
+        //   +0x14  s16    current sub-state
+        //   +0x16  s16    prev sub-state
+        //   +0x18  s16    next sub-state
+        uint32_t scene_state = 0x817FFA80;
+        memset(g_mem.translate(scene_state), 0, 64);
+        g_mem.write32(scene_state + 0x00, 0x80395C20);  // vtable (same scene class)
+        g_mem.write32(scene_state + 0x08, mgr_addr);    // scene_config-like ref
+        g_mem.write32(scene_state + 0x0C, 0);
+        g_mem.write32(scene_state + 0x10, 0);           // main state = 0 (idle)
+        g_mem.write16(scene_state + 0x14, 0);           // sub-state
+        g_mem.write16(scene_state + 0x16, 0);
+        g_mem.write16(scene_state + 0x18, 1);
+        g_mem.write32(g_ctx.r[13] - 26608, scene_state);
+        printf("[*]   Scene-state object at 0x%08X (state=%d)\n",
+               scene_state, g_mem.read32(scene_state + 0x10));
+
         // Timing/display structure (from Dolphin capture at 0x805F4EC0)
         // Contains screen dimensions, frame state, and vtable pointer.
         // The scene manager stores a pointer to this at +4, and process
