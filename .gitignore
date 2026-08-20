@@ -67,3 +67,6 @@ desktop.ini
 
 # IDA database (35MB, regenerable from main.elf)
 *.i64
+
+# ...but README assets are part of the repo
+!assets/screenshot-*.png
