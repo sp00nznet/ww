@@ -7,6 +7,19 @@ statically recompiles its PowerPC 750CXe (Gekko) machine code into native
 x86-64 C code that runs directly on Windows 11. No emulator. No compatibility
 layer. Just the Great Sea, running natively.
 
+![Wind Waker island geometry rendered natively through gcrecomp](assets/screenshot-great-sea.png)
+
+*Wind Waker island geometry, running in a native Win32 window. No Dolphin, no
+emulator: the game's own PowerPC code was translated to C ahead of time, and its
+GX draw calls go out through our own D3D11 backend. Terrain, fence posts and
+textures are read from a real disc image at runtime -- `Stage.arc` and
+`Room44.arc`, Yaz0-decompressed, J3D/BDL parsed, CMPR textures decoded, shaded
+by HLSL generated from the game's TEV stage configuration.*
+
+*Honest caveat: this is the renderer, not the game. The frame loop is being
+driven by us rather than by the title screen's own state machine, and the black
+spiral is a water/skybox texture we still map wrong.*
+
 ## What Is Static Recompilation?
 
 Unlike an emulator that interprets or dynamically translates instructions at
