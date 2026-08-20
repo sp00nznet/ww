@@ -343,6 +343,27 @@ This project builds on incredible work by the community:
 - [**decomp-toolkit**](https://github.com/encounter/decomp-toolkit) — GameCube binary analysis tools
 - [**powerpc-rs**](https://github.com/encounter/powerpc-rs) — Fuzz-tested PPC750 disassembler reference
 
+## License
+
+**MIT.** See [LICENSE](LICENSE). The recompiler and runtime library it builds on,
+[gcrecomp](https://github.com/sp00nznet/gcrecomp), is MIT as well.
+
+That is deliberate, and it is the point of the project. Every other GameCube
+static recompilation stack is a Dolphin derivative and therefore GPL:
+[DolRecomp](https://github.com/ExpansionPak/DolRecomp) and
+[ModernGekko](https://github.com/ExpansionPak/ModernGekko) are GPLv3, and everything
+built on them inherits that. Writing our own GX, OS, and hardware layers from scratch
+is slower than vendoring an emulator, and it is the only way to end up with a
+permissively licensed toolchain — one that can be embedded in a commercial port,
+shipped on a console, or used by a preservation project that cannot take GPL.
+
+Keeping that claim defensible means treating other emulators as black boxes: we
+observe behaviour (memory dumps, traces, framebuffer output) and never read an
+implementation and reimplement from it.
+
+Third-party material vendored here: `docs/dusk-ref/` carries decomp headers from
+[TwilitRealm/dusk](https://github.com/TwilitRealm/dusk) under CC0.
+
 ## Legal
 
 This project does not include any copyrighted game assets or code. You must
