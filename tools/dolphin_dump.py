@@ -10,6 +10,7 @@ Usage:
   2. Wait for title screen (camera panning over ocean)
   3. Pause emulation (Dolphin menu: Emulation > Pause)
   4. Run: python tools/dolphin_dump.py > dolphin_capture.json
+     ...or: python tools/dolphin_dump.py --snapshot ww_snapshot.bin
 
 Requires: pip install dolphin-memory-engine
 """
@@ -413,6 +414,59 @@ def dump_tree_node_details(nodes):
 # Main
 # ============================================================================
 
+# ============================================================================
+# Full MEM1 snapshot ("warm start")
+# ============================================================================
+#
+# Boot is the hard part of a static recomp, so skip it: let Dolphin boot the
+# game, then lift the whole machine state out and start executing from there.
+# This reads Dolphin's memory as a black box -- no emulator code is used or
+# derived, so the snapshot and everything built on it stay MIT.
+
+MEM1_BASE = 0x80000000
+MEM1_SIZE = 24 * 1024 * 1024
+OS_CURRENT_CONTEXT = 0x800000D4  # -> OSContext of the running thread
+SNAPSHOT_MAGIC = b"WWSNAP01"
+
+
+def read_os_context_gprs():
+    """GPRs of the currently-running thread, from its OSContext."""
+    ctx_addr = read_u32(OS_CURRENT_CONTEXT)
+    if not is_valid_ptr(ctx_addr):
+        raise RuntimeError(
+            f"OS_CURRENT_CONTEXT holds 0x{ctx_addr:08X}, not a MEM1 pointer. "
+            "Is the game actually running (not just booted into the IPL)?"
+        )
+    raw = bytes(dme.read_bytes(ctx_addr, 32 * 4))  # gpr[0..31] at +0x00
+    return ctx_addr, list(struct.unpack(">32I", raw))
+
+
+def dump_snapshot(path):
+    """Write header + full MEM1 image to `path`. See load_snapshot() in main.cpp."""
+    ctx_addr, gprs = read_os_context_gprs()
+    print(f"  OSContext @0x{ctx_addr:08X}", file=sys.stderr)
+    print(f"  r1=0x{gprs[1]:08X} r2=0x{gprs[2]:08X} r13=0x{gprs[13]:08X}",
+          file=sys.stderr)
+    if gprs[13] != R13:
+        print(f"  WARNING: r13 != expected 0x{R13:08X} (different build/region?)",
+              file=sys.stderr)
+
+    # dolphin-memory-engine chokes on multi-MB reads; go a chunk at a time.
+    chunk = 64 * 1024
+    with open(path, "wb") as f:
+        f.write(SNAPSHOT_MAGIC)
+        f.write(struct.pack("<32I", *gprs))
+        f.write(struct.pack("<I", MEM1_SIZE))
+        for off in range(0, MEM1_SIZE, chunk):
+            f.write(bytes(dme.read_bytes(MEM1_BASE + off, chunk)))
+            if off % (4 * 1024 * 1024) == 0:
+                print(f"  ...{off // (1024 * 1024)} MB", file=sys.stderr)
+
+    print(f"Snapshot written: {path} ({8 + 128 + 4 + MEM1_SIZE} bytes)",
+          file=sys.stderr)
+    print(f"Run it with:  set WW_SNAPSHOT={path}", file=sys.stderr)
+
+
 def main():
     print("Connecting to Dolphin...", file=sys.stderr)
 
@@ -441,6 +495,13 @@ def main():
     print(f"  Game ID: {game_id}", file=sys.stderr)
     if not game_id.startswith("GZLE"):
         print(f"WARNING: Expected GZLE01 (Wind Waker US), got {game_id}", file=sys.stderr)
+
+    # --snapshot <file>: lift all of MEM1 + the live GPRs, then stop.
+    if "--snapshot" in sys.argv:
+        i = sys.argv.index("--snapshot")
+        out = sys.argv[i + 1] if i + 1 < len(sys.argv) else "ww_snapshot.bin"
+        dump_snapshot(out)
+        return
 
     capture = {
         "metadata": {
