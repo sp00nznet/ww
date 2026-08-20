@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <thread>
 #include <atomic>
 #include <cmath>
@@ -38,6 +39,8 @@ extern void register_recompiled_functions(ww::FuncTable& table);
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <dbghelp.h>
+#include <tlhelp32.h>
 #endif
 
 using namespace ww;
@@ -46,6 +49,8 @@ static const uint32_t WINDOW_WIDTH  = 1280;
 static const uint32_t WINDOW_HEIGHT = 720;
 
 static std::atomic<bool> g_game_running{false};
+// Published for the stall watchdog; the loop's own `frame` is lambda-local.
+static std::atomic<int> g_frame_counter{0};
 
 // Parsed BDL models for rendering
 static j3d::J3DModel g_room_model;    // Island terrain
@@ -193,6 +198,31 @@ static const uint32_t RARC_BUF_SIZE_ADDR = 0x817FFE04;
 // chain func_8003CFF0 → func_802412F8 → func_802B0494 (real JKR alloc)
 // is unreachable in our environment because we never initialize the JKR
 // heap structure; this override short-circuits to the bump arena.
+// WW_SKIP_PROFILES: comma-separated hex profile ids whose execute/draw
+// methods are skipped, e.g. WW_SKIP_PROFILES=0008,14. Parsed once.
+static bool ww_profile_skipped(uint16_t profname) {
+    static const std::vector<uint16_t> skip = [] {
+        std::vector<uint16_t> v;
+        const char* e = std::getenv("WW_SKIP_PROFILES");
+        if (e) {
+            for (const char* p = e; *p;) {
+                char* end = nullptr;
+                unsigned long id = std::strtoul(p, &end, 16);
+                if (end == p) break;
+                v.push_back((uint16_t)id);
+                p = (*end == ',') ? end + 1 : end;
+            }
+        }
+        return v;
+    }();
+    for (uint16_t id : skip) if (id == profname) return true;
+    return false;
+}
+static bool ww_have_skip_list() {
+    static const bool any = std::getenv("WW_SKIP_PROFILES") != nullptr;
+    return any;
+}
+
 // Diagnostic logger for the patched func_8003D7E0 (layer dispatch).
 extern "C" void ww_log_layer_dispatch(uint32_t callback_addr) {
     static int s_log = 0;
@@ -305,10 +335,74 @@ extern "C" int ww_spawn_test_active() {
     return active;
 }
 
+// Warm-started from a Dolphin snapshot (see WW_SNAPSHOT). The image carries
+// a real, initialized JKR heap, so the HLE stand-ins for one must stay out of
+// the way.
+extern "C" int ww_snapshot_mode() {
+    static const int active = std::getenv("WW_SNAPSHOT") ? 1 : 0;
+    return active;
+}
+
 // Used by recompiled patches that behave differently in natural-boot mode.
 extern "C" int ww_natural_boot_active() {
     static const int active = std::getenv("WW_NATURAL_BOOT") ? 1 : 0;
     return active;
+}
+
+// Dump a native stack for every other thread in this process.
+//
+// A hang in recompiled code leaves nothing useful in the log, and there is no
+// cdb/procdump on this machine -- but dbghelp ships with Windows, so the
+// process can walk its own threads. Suspend, StackWalk, resume.
+static void dump_all_stacks() {
+    HANDLE proc = GetCurrentProcess();
+    SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
+    SymInitialize(proc, nullptr, TRUE);
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    THREADENTRY32 te{}; te.dwSize = sizeof(te);
+    const DWORD pid = GetCurrentProcessId(), self = GetCurrentThreadId();
+
+    for (BOOL more = Thread32First(snap, &te); more; more = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
+        HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT |
+                               THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+        if (!th) continue;
+        if (SuspendThread(th) == (DWORD)-1) { CloseHandle(th); continue; }
+
+        CONTEXT c{}; c.ContextFlags = CONTEXT_FULL;
+        if (GetThreadContext(th, &c)) {
+            STACKFRAME64 f{};
+            f.AddrPC.Offset = c.Rip;    f.AddrPC.Mode    = AddrModeFlat;
+            f.AddrFrame.Offset = c.Rbp; f.AddrFrame.Mode = AddrModeFlat;
+            f.AddrStack.Offset = c.Rsp; f.AddrStack.Mode = AddrModeFlat;
+
+            fprintf(stderr, "[STACK] --- thread %lu ---\n", te.th32ThreadID);
+            for (int depth = 0; depth < 24; depth++) {
+                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, th, &f, &c,
+                                 nullptr, SymFunctionTableAccess64,
+                                 SymGetModuleBase64, nullptr) || !f.AddrPC.Offset)
+                    break;
+                // SYMBOL_INFO is variable-length: the name lives past the struct.
+                char buf[sizeof(SYMBOL_INFO) + 512] = {};
+                auto* sym = reinterpret_cast<SYMBOL_INFO*>(buf);
+                sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+                sym->MaxNameLen   = 511;
+                DWORD64 disp = 0;
+                if (SymFromAddr(proc, f.AddrPC.Offset, &disp, sym))
+                    fprintf(stderr, "[STACK]   %s + 0x%llX\n", sym->Name,
+                            (unsigned long long)disp);
+                else
+                    fprintf(stderr, "[STACK]   0x%llX\n",
+                            (unsigned long long)f.AddrPC.Offset);
+            }
+        }
+        ResumeThread(th);
+        CloseHandle(th);
+    }
+    CloseHandle(snap);
+    fflush(stderr);
 }
 
 // Trace func_800404CC entry (restored draw-dispatch path in natural boot).
@@ -1447,10 +1541,16 @@ int main(int argc, char** argv) {
         uint32_t callback_holder = ctx->r[4];
         uint32_t callback_fn = (callback_holder >= 0x80000000)
             ? mem->read32(callback_holder) : 0;
+        // profname is at base_process_class +0x0E (s16). Only read it when
+        // something actually wants it -- this runs on every dispatch, and an
+        // out-of-range proc_base sends each read down Memory's slow
+        // bad-address path.
+        uint16_t profname = 0;
+        const bool need_profname = trace_count < 40 || ww_have_skip_list();
+        if (need_profname && proc_base >= 0x80000000) {
+            profname = mem->read16(proc_base + 0x0E);
+        }
         if (trace_count < 40) {
-            // profname is at base_process_class +0x0E (s16).
-            uint16_t profname = (proc_base >= 0x80000000)
-                ? mem->read16(proc_base + 0x0E) : 0;
             const char* kind = (callback_fn == 0x8003E370) ? "EXEC"
                              : (callback_fn == 0x8003E390) ? "DRAW"
                              : "????";
@@ -1459,6 +1559,19 @@ int main(int argc, char** argv) {
             fflush(stderr);
         }
         trace_count++;
+
+        // WW_SKIP_PROFILES=0008,0014 -- drop these profiles' methods on the
+        // floor. A single bad process otherwise wedges the whole frame loop,
+        // so skipping it tells us what the rest of the frame would do.
+        if (ww_profile_skipped(profname)) {
+            static int skip_log = 0;
+            if (skip_log++ < 8) {
+                fprintf(stderr, "[SKIP] profile 0x%04X (proc 0x%08X)\n",
+                        profname, proc_base);
+                fflush(stderr);
+            }
+            return;
+        }
 
         // Execute the real callback chain
         extern void func_8003D96C(PPCContext* ctx, Memory* mem);
@@ -1550,6 +1663,12 @@ int main(int argc, char** argv) {
     printf("[*] Initializing heap (bump allocator)...\n");
     {
         // Replace JKR alloc/free with bump allocator
+        // Skipped under WW_SNAPSHOT. These stand in for a JKR heap we never
+        // built -- but a snapshot arrives with a real one, and the bump arena
+        // (0x80400000-0x81700000) covers memory the image is already using.
+        // Handing that out as fresh allocations scribbles over the objects the
+        // frame loop is about to walk.
+        if (!ww_snapshot_mode()) {
         g_func_table.register_func(0x802B0434, bump_alloc_replacement);
         g_func_table.register_func(0x802B04FC, bump_free_replacement);
         g_func_table.register_func(0x8001199C, get_current_heap_replacement);
@@ -1594,6 +1713,7 @@ int main(int argc, char** argv) {
 
         printf("[*] Bump allocator: 0x%08X - 0x%08X\n",
                g_bump_alloc_ptr, BUMP_ALLOC_END);
+        }  // !ww_snapshot_mode
 
         // Initialize JKR archive mount system (vtable + sVolumeList)
         jkr::init(g_func_table, g_mem);
@@ -3178,11 +3298,121 @@ int main(int argc, char** argv) {
         // See the "natural" path inside the func_80022CEC register_func.
     }
 
+    // ---- Warm start from a Dolphin snapshot (WW_SNAPSHOT) ----
+    // Reproducing the boot sequence by hand is the thing that has kept us off
+    // a title screen. So don't: let Dolphin boot the game, lift all of MEM1
+    // plus the live GPRs (tools/dolphin_dump.py --snapshot), and drop that
+    // over the top of whatever our own boot produced. Everything host-side --
+    // func-table registrations, HLE hooks, the mounted disc, D3D -- survives,
+    // because this only overwrites emulated RAM.
+    //
+    // Dolphin is used strictly as a black box here: we read the bytes it
+    // produced, never its code, so this stays MIT.
+    if (const char* snap_path = std::getenv("WW_SNAPSHOT")) {
+        FILE* f = fopen(snap_path, "rb");
+        if (!f) {
+            fprintf(stderr, "[SNAP] Cannot open %s\n", snap_path);
+            return 1;
+        }
+        char magic[8] = {};
+        uint32_t gprs[32] = {};
+        uint32_t mem1_size = 0;
+        bool ok = fread(magic, 1, 8, f) == 8 &&
+                  memcmp(magic, "WWSNAP01", 8) == 0 &&
+                  fread(gprs, 4, 32, f) == 32 &&
+                  fread(&mem1_size, 4, 1, f) == 1;
+        if (!ok) {
+            fprintf(stderr, "[SNAP] %s is not a WWSNAP01 snapshot\n", snap_path);
+            fclose(f);
+            return 1;
+        }
+        // MEM1 must land inside the RAM we allocated; the RELs we relocate to
+        // 0x82000000+ sit above it and are deliberately left untouched.
+        if (mem1_size > g_mem.ram_size) {
+            fprintf(stderr, "[SNAP] Snapshot MEM1 is %u bytes, RAM is %u\n",
+                    mem1_size, g_mem.ram_size);
+            fclose(f);
+            return 1;
+        }
+        uint8_t* dst = g_mem.translate(Memory::MAIN_RAM_BASE);
+        size_t got = fread(dst, 1, mem1_size, f);
+        fclose(f);
+        if (got != mem1_size) {
+            fprintf(stderr, "[SNAP] Short read: %zu of %u bytes\n", got, mem1_size);
+            return 1;
+        }
+
+        // Take the snapshot's own stack rather than ours: r1 points into a real
+        // thread stack with real headroom, and ours would now be pointing at
+        // whatever game data landed at that address.
+        g_ctx.r[1]  = gprs[1];
+        g_ctx.r[2]  = gprs[2];
+        g_ctx.r[13] = gprs[13];
+
+        printf("[SNAP] Loaded %u bytes of MEM1 from %s\n", mem1_size, snap_path);
+        printf("[SNAP] r1=0x%08X r2=0x%08X r13=0x%08X\n",
+               g_ctx.r[1], g_ctx.r[2], g_ctx.r[13]);
+        printf("[SNAP] scene state (r13-32736) = %d, stage = \"%.7s\"\n",
+               (int32_t)g_mem.read32(g_ctx.r[13] - 32736),
+               (const char*)g_mem.translate(0x803C9D2C));
+        // ponytail: REL code still runs from our 0x82000000+ relocation while
+        // the snapshot's REL pointers point at MEM1. Fine until a REL actor
+        // executes; fix by relocating to the snapshot's addresses if it bites.
+    }
+
+    g_game_running = true;
+
+    // ---- Stall watchdog ----
+    // A hang in recompiled code is otherwise invisible: the process just sits
+    // there with no output and no way to get a PPC-level location. Sample the
+    // dispatch probe instead. A frozen sequence number means we are spinning
+    // inside one recompiled function, and `addr` is the last one entered.
+    std::thread watchdog([&]() {
+        uint32_t addr = 0, lr = 0;
+        uint64_t last_seq = gcrecomp::last_dispatch(&addr, &lr);
+        int last_frame = -1, stalls = 0;
+        while (g_game_running) {
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            uint64_t seq = gcrecomp::last_dispatch(&addr, &lr);
+            int f = g_frame_counter.load();
+            if (f != last_frame) {
+                stalls = 0;                       // frames advancing: healthy
+            } else if (++stalls <= 3) {
+                // Frame stuck. Either we are spinning inside one function with
+                // no calls at all (seq frozen), or looping over a call chain
+                // forever (seq climbing) -- the two need different fixes.
+                if (seq == last_seq) {
+                    fprintf(stderr, "[STALL] frame %d stuck, no dispatch for 2s. "
+                            "Spinning inside 0x%08X (from LR=0x%08X) at #%llu\n",
+                            f, addr, lr, (unsigned long long)seq);
+                } else {
+                    fprintf(stderr, "[STALL] frame %d stuck, but %llu dispatches "
+                            "in 2s. Looping; last 0x%08X (from LR=0x%08X)\n",
+                            f, (unsigned long long)(seq - last_seq), addr, lr);
+                }
+                fflush(stderr);
+                if (stalls == 1) {
+                    // The game thread mutates g_ctx directly, so at a stall
+                    // this is the live register state inside the stuck loop.
+                    for (int i = 0; i < 32; i += 4) {
+                        fprintf(stderr, "[STALL] r%-2d %08X  r%-2d %08X  "
+                                "r%-2d %08X  r%-2d %08X\n",
+                                i,   g_ctx.r[i],   i+1, g_ctx.r[i+1],
+                                i+2, g_ctx.r[i+2], i+3, g_ctx.r[i+3]);
+                    }
+                    dump_all_stacks();
+                }
+            }
+            last_seq = seq;
+            last_frame = g_frame_counter.load();
+        }
+    });
+    watchdog.detach();
+
     // ---- Launch Game Thread ----
     printf("[*] Launching game thread (main01 loop)...\n");
     printf("[*] (Press ESC to quit)\n\n");
 
-    g_game_running = true;
     std::thread game_thread([&]() {
         fprintf(stderr, "[*] Entering main game loop (fapGm_Execute per frame)...\n");
 
@@ -3395,6 +3625,7 @@ int main(int argc, char** argv) {
             func_80006264(&g_ctx, &g_mem);  // main loop cleanup
 
             frame++;
+            g_frame_counter.store(frame);
             if (frame <= 10 || frame % 60 == 0) {
                 int16_t ss = (int16_t)g_mem.read16(g_ctx.r[13] - 30754);
                 // Check game info values that change during gameplay

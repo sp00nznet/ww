@@ -99,7 +99,11 @@ if(WW_BUILD_RUNTIME)
     endif()
     target_include_directories(ww_launcher PRIVATE include)
     if(WIN32)
-        target_link_libraries(ww_launcher PRIVATE d3d11 d3dcompiler dxgi)
+        # dbghelp: the stall watchdog walks the other threads' stacks on a hang.
+        target_link_libraries(ww_launcher PRIVATE d3d11 d3dcompiler dxgi dbghelp)
+        # Emit PDBs even in Release, or those stacks are bare addresses.
+        target_compile_options(ww_launcher PRIVATE $<$<CONFIG:Release>:/Zi>)
+        target_link_options(ww_launcher PRIVATE $<$<CONFIG:Release>:/DEBUG>)
     endif()
 endif()
 
