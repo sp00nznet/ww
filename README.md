@@ -118,7 +118,9 @@ cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --target ww_recompiler --config Release
 
 # Recompile the game (you need the DOL extracted from your ISO)
-./build/Release/ww_recompiler.exe main.dol --extra-funcs extra_funcs.txt --output recompiled/
+./build/lib/gcrecomp/Release/gcrecomp_recompiler.exe main.dol \
+    --extra-funcs extra_funcs.txt --output recompiled/
+python tools/patches.py apply   # re-apply the 14 hand edits to generated code
 
 # IMPORTANT: After recompiling, apply patches to recompiled source:
 #   See "Recompiled Source Patches" section below for the full list.

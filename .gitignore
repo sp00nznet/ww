@@ -33,7 +33,13 @@ CMakeSettings.json
 *.tgc
 
 # Generated recompiled source
-recompiled/
+# Generated code -- except recomp_common.h, which is NOT generated for this
+# project. It binds every generated function to ww::g_mem / ww::g_func_table;
+# regenerating over it compiles cleanly and then crashes at run time. Git will
+# not descend into an ignored directory, so this must be dir/* to allow the
+# negation below.
+recompiled/*
+!recompiled/recomp_common.h
 
 # Extracted assets
 assets/extracted/
@@ -70,3 +76,8 @@ desktop.ini
 
 # ...but README assets are part of the repo
 !assets/screenshot-*.png
+
+# ...but this one is not generated for this project: it binds the generated
+# code to ww's runtime (ww::g_mem / ww::g_func_table). Losing it compiles
+# fine and then crashes.
+!recompiled/recomp_common.h
