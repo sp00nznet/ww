@@ -12,32 +12,13 @@ if(WIN32)
 endif()
 
 # Build options
-option(WW_BUILD_RECOMPILER "Build the static recompiler tool" ON)
 option(WW_BUILD_RUNTIME "Build the game runtime" ON)
-option(WW_BUILD_TOOLS "Build auxiliary tools (DOL parser, asset extractor)" ON)
 
 # ===========================================================================
 # gcrecomp — Generic GameCube recompilation toolkit (submodule)
 # Provides: gcrecomp_gx, gcrecomp_audio, gcrecomp_input, gcrecomp_runtime
 # ===========================================================================
 add_subdirectory(lib/gcrecomp)
-
-# ===========================================================================
-# Tool: DOL/REL Parser & Static Recompiler
-# ===========================================================================
-if(WW_BUILD_RECOMPILER)
-    add_executable(ww_recompiler
-        tools/recompiler/main.cpp
-        tools/recompiler/dol_parser.cpp
-        tools/recompiler/rel_parser.cpp
-        tools/recompiler/ppc_disasm.cpp
-        tools/recompiler/ppc_to_c.cpp
-        tools/recompiler/cfg_builder.cpp
-        tools/recompiler/symbol_map.cpp
-    )
-    target_include_directories(ww_recompiler PRIVATE include)
-    target_compile_definitions(ww_recompiler PRIVATE WW_TOOL)
-endif()
 
 # ===========================================================================
 # Runtime Library: Wind Waker-specific OS/runtime layer
@@ -83,7 +64,6 @@ if(WW_BUILD_RUNTIME)
         src/main.cpp
         src/j3d.cpp
         src/jkr_archive.cpp
-        tools/recompiler/dol_parser.cpp
     )
     target_link_libraries(ww_launcher PRIVATE
         ww_runtime
@@ -105,16 +85,4 @@ if(WW_BUILD_RUNTIME)
         target_compile_options(ww_launcher PRIVATE $<$<CONFIG:Release>:/Zi>)
         target_link_options(ww_launcher PRIVATE $<$<CONFIG:Release>:/DEBUG>)
     endif()
-endif()
-
-# ===========================================================================
-# Auxiliary Tools
-# ===========================================================================
-if(WW_BUILD_TOOLS)
-    add_executable(ww_dol_info
-        tools/dol_info/main.cpp
-        tools/recompiler/dol_parser.cpp
-        tools/recompiler/ppc_disasm.cpp
-    )
-    target_include_directories(ww_dol_info PRIVATE include)
 endif()

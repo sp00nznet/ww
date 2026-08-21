@@ -10,7 +10,6 @@
 // =============================================================================
 
 #include "ww/runtime.h"
-#include "ww/dol.h"
 #include "gcrecomp/dol.h"
 #include "ww/gx/gx.h"
 #include "ww/audio/audio.h"
@@ -698,7 +697,7 @@ static int register_rel_profile(const char* disc_name,
 
 // Load DOL sections into emulated memory
 static bool load_dol_into_memory(const char* path, Memory& mem) {
-    ww::DOLFile dol;
+    gcrecomp::DOLFile dol;
     if (!dol.load(path)) {
         fprintf(stderr, "[DOL] Failed to load: %s\n", path);
         return false;
