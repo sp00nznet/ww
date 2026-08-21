@@ -1,0 +1,88 @@
+# addr=0x802B6AB8 name=func_802B6AB8 from=recomp_0064.cpp
+// ---- func_802B6AB8 @ 0x802B6AB8 ----
+// PATCHED: Delegate to JKR mount system's findVolume handler.
+void func_802B6AB8(PPCContext* ctx, Memory* mem) {
+    g_func_table.call(0x802B6AB8, ctx, mem);
+    return;
+#if 0 // Original code disabled
+label_802B6AB8:
+    // 0x802B6AB8: stwu
+    { uint32_t ea = ctx->r[1] + -288; MEM_WRITE32(ea, ctx->r[1]); ctx->r[1] = ea; }
+    // 0x802B6ABC: mfspr
+    ctx->r[0] = ctx->lr;
+    // 0x802B6AC0: stw
+    MEM_WRITE32(ctx->r[1] + 292, ctx->r[0]);
+    // 0x802B6AC4: stw
+    MEM_WRITE32(ctx->r[1] + 284, ctx->r[31]);
+    // 0x802B6AC8: mr
+    ctx->r[31] = ctx->r[3] | ctx->r[3];
+    // 0x802B6ACC: lwz
+    ctx->r[5] = MEM_READ32(ctx->r[3] + 0);
+    // 0x802B6AD0: lbz
+    ctx->r[0] = MEM_READ8(ctx->r[5] + 0);
+    // 0x802B6AD4: cmpwi
+    { int32_t a = (int32_t)ctx->r[0]; int32_t b = 47; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x802B6AD8: bc
+    if (ctx->get_cr_bit(2)) goto label_802B6AE4; // bt cr2
+label_802B6ADC:
+    // 0x802B6ADC: lwz
+    ctx->r[3] = MEM_READ32(ctx->r[13] + -26912);
+    // 0x802B6AE0: b
+    goto label_802B6B30; // b
+label_802B6AE4:
+    // 0x802B6AE4: addi
+    ctx->r[3] = (int32_t)ctx->r[1] + 8;
+    // 0x802B6AE8: li
+    ctx->r[4] = 0x101;
+    // 0x802B6AEC: bl
+    ctx->lr = 0x802B6AF0u; func_802B6B44(ctx, mem); // bl
+    // 0x802B6AF0: stw
+    MEM_WRITE32(ctx->r[31] + 0, ctx->r[3]);
+    // 0x802B6AF4: lis
+    ctx->r[3] = 0x803F0000;
+    // 0x802B6AF8: lwz
+    ctx->r[31] = MEM_READ32(ctx->r[3] + -10372);
+    // 0x802B6AFC: b
+    goto label_802B6B24; // b
+label_802B6B00:
+    // 0x802B6B00: lwz
+    ctx->r[4] = MEM_READ32(ctx->r[31] + 0);
+    // 0x802B6B04: addi
+    ctx->r[3] = (int32_t)ctx->r[1] + 8;
+    // 0x802B6B08: lwz
+    ctx->r[4] = MEM_READ32(ctx->r[4] + 40);
+    // 0x802B6B0C: bl
+    ctx->lr = 0x802B6B10u; func_8032DB44(ctx, mem); // bl
+    // 0x802B6B10: cmpwi
+    { int32_t a = (int32_t)ctx->r[3]; int32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x802B6B14: bc
+    if (!ctx->get_cr_bit(2)) goto label_802B6B20; // bf cr2
+label_802B6B18:
+    // 0x802B6B18: lwz
+    ctx->r[3] = MEM_READ32(ctx->r[31] + 0);
+    // 0x802B6B1C: b
+    goto label_802B6B30; // b
+label_802B6B20:
+    // 0x802B6B20: lwz
+    ctx->r[31] = MEM_READ32(ctx->r[31] + 12);
+label_802B6B24:
+    // 0x802B6B24: cmplwi
+    { uint32_t a = ctx->r[31]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x802B6B28: bc
+    if (!ctx->get_cr_bit(2)) goto label_802B6B00; // bf cr2
+label_802B6B2C:
+    // 0x802B6B2C: li
+    ctx->r[3] = 0x0;
+label_802B6B30:
+    // 0x802B6B30: lwz
+    ctx->r[31] = MEM_READ32(ctx->r[1] + 284);
+    // 0x802B6B34: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[1] + 292);
+    // 0x802B6B38: mtspr
+    ctx->lr = ctx->r[0];
+    // 0x802B6B3C: addi
+    ctx->r[1] = (int32_t)ctx->r[1] + 288;
+    // 0x802B6B40: blr
+    return; // blr
+#endif // Original code disabled
+}

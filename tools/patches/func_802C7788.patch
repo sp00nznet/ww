@@ -1,0 +1,190 @@
+# addr=0x802C7788 name=func_802C7788 from=recomp_0066.cpp
+// ---- func_802C7788 @ 0x802C7788 ----
+// PATCHED: Original spins on Time Base register (VIWaitForRetrace).
+// TB is never incremented in recompiled code, so this hangs forever.
+void func_802C7788(PPCContext* ctx, Memory* mem) {
+    return; // PATCHED: no-op
+#if 0 // Original recompiled code below
+label_802C7788:
+    // 0x802C7788: stwu
+    { uint32_t ea = ctx->r[1] + -288; MEM_WRITE32(ea, ctx->r[1]); ctx->r[1] = ea; }
+    // 0x802C778C: mfspr
+    ctx->r[0] = ctx->lr;
+    // 0x802C7790: stw
+    MEM_WRITE32(ctx->r[1] + 292, ctx->r[0]);
+    // 0x802C7794: addi
+    ctx->r[11] = (int32_t)ctx->r[1] + 288;
+    // 0x802C7798: bl
+    ctx->lr = 0x802C779Cu; func_80328F3C(ctx, mem); // bl
+    // 0x802C779C: mr
+    ctx->r[28] = ctx->r[3] | ctx->r[3];
+    // 0x802C77A0: mr
+    ctx->r[31] = ctx->r[4] | ctx->r[4];
+    // 0x802C77A4: mr
+    ctx->r[30] = ctx->r[5] | ctx->r[5];
+    // 0x802C77A8: mr
+    ctx->r[29] = ctx->r[6] | ctx->r[6];
+    // 0x802C77AC: lis
+    ctx->r[3] = 0x80370000;
+    // 0x802C77B0: addi
+    ctx->r[3] = (int32_t)ctx->r[3] + -14704;
+    // 0x802C77B4: addi
+    ctx->r[3] = (int32_t)ctx->r[3] + 37;
+    // 0x802C77B8: mr
+    ctx->r[4] = ctx->r[29] | ctx->r[29];
+    // 0x802C77BC: mr
+    ctx->r[5] = ctx->r[31] | ctx->r[31];
+    // 0x802C77C0: mr
+    ctx->r[6] = ctx->r[30] | ctx->r[30];
+    // 0x802C77C4: crxor
+    { bool a = ctx->get_cr_bit(6); bool b = ctx->get_cr_bit(6); ctx->set_cr_bit(6, a ^ b); }
+    // 0x802C77C8: bl
+    ctx->lr = 0x802C77CCu; func_80006950(ctx, mem); // bl
+    // 0x802C77CC: rlwinm
+    ctx->r[0] = ctx->r[28] & 0x00000001;
+    ctx->update_cr0((int32_t)ctx->r[0]);
+    // 0x802C77D0: bc
+    if (ctx->get_cr_bit(2)) goto label_802C78CC; // bt cr2
+label_802C77D4:
+    // 0x802C77D4: lwz
+    ctx->r[3] = MEM_READ32(ctx->r[13] + -26656);
+    // 0x802C77D8: cmplwi
+    { uint32_t a = ctx->r[3]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x802C77DC: bc
+    if (ctx->get_cr_bit(2)) goto label_802C78CC; // bt cr2
+label_802C77E0:
+    // 0x802C77E0: li
+    ctx->r[4] = 0xA;
+    // 0x802C77E4: li
+    ctx->r[5] = 0x10;
+    // 0x802C77E8: li
+    ctx->r[6] = 0x132;
+    // 0x802C77EC: li
+    ctx->r[7] = 0x18;
+    // 0x802C77F0: bl
+    ctx->lr = 0x802C77F4u; func_802C6FE0(ctx, mem); // bl
+    // 0x802C77F4: addi
+    ctx->r[3] = (int32_t)ctx->r[1] + 8;
+    // 0x802C77F8: li
+    ctx->r[4] = 0x5F;
+    // 0x802C77FC: lis
+    ctx->r[5] = 0x80370000;
+    // 0x802C7800: addi
+    ctx->r[5] = (int32_t)ctx->r[5] + -14704;
+    // 0x802C7804: addi
+    ctx->r[5] = (int32_t)ctx->r[5] + 77;
+    // 0x802C7808: mr
+    ctx->r[6] = ctx->r[31] | ctx->r[31];
+    // 0x802C780C: mr
+    ctx->r[7] = ctx->r[30] | ctx->r[30];
+    // 0x802C7810: crxor
+    { bool a = ctx->get_cr_bit(6); bool b = ctx->get_cr_bit(6); ctx->set_cr_bit(6, a ^ b); }
+    // 0x802C7814: bl
+    ctx->lr = 0x802C7818u; func_8032B9E4(ctx, mem); // bl
+    // 0x802C7818: lwz
+    ctx->r[3] = MEM_READ32(ctx->r[13] + -26656);
+    // 0x802C781C: li
+    ctx->r[4] = 0x10;
+    // 0x802C7820: li
+    ctx->r[5] = 0x10;
+    // 0x802C7824: addi
+    ctx->r[6] = (int32_t)ctx->r[1] + 8;
+    // 0x802C7828: bl
+    ctx->lr = 0x802C782Cu; func_802C734C(ctx, mem); // bl
+    // 0x802C782C: addi
+    ctx->r[3] = (int32_t)ctx->r[1] + 8;
+    // 0x802C7830: li
+    ctx->r[4] = 0x5F;
+    // 0x802C7834: lis
+    ctx->r[5] = 0x80370000;
+    // 0x802C7838: addi
+    ctx->r[5] = (int32_t)ctx->r[5] + -14704;
+    // 0x802C783C: addi
+    ctx->r[5] = (int32_t)ctx->r[5] + 15;
+    // 0x802C7840: mr
+    ctx->r[6] = ctx->r[29] | ctx->r[29];
+    // 0x802C7844: crxor
+    { bool a = ctx->get_cr_bit(6); bool b = ctx->get_cr_bit(6); ctx->set_cr_bit(6, a ^ b); }
+    // 0x802C7848: bl
+    ctx->lr = 0x802C784Cu; func_8032B9E4(ctx, mem); // bl
+    // 0x802C784C: lwz
+    ctx->r[3] = MEM_READ32(ctx->r[13] + -26656);
+    // 0x802C7850: li
+    ctx->r[4] = 0x10;
+    // 0x802C7854: li
+    ctx->r[5] = 0x18;
+    // 0x802C7858: addi
+    ctx->r[6] = (int32_t)ctx->r[1] + 8;
+    // 0x802C785C: bl
+    ctx->lr = 0x802C7860u; func_802C734C(ctx, mem); // bl
+    // 0x802C7860: lwz
+    ctx->r[3] = MEM_READ32(ctx->r[13] + -26656);
+    // 0x802C7864: lwz
+    ctx->r[3] = MEM_READ32(ctx->r[3] + 0);
+    // 0x802C7868: bl
+    ctx->lr = 0x802C786Cu; func_80314824(ctx, mem); // bl
+    // 0x802C786C: bl
+    ctx->lr = 0x802C7870u; func_80313A04(ctx, mem); // bl
+    // 0x802C7870: bl
+    ctx->lr = 0x802C7874u; func_803146F4(ctx, mem); // bl
+    // 0x802C7874: bl
+    ctx->lr = 0x802C7878u; func_803095EC(ctx, mem); // bl
+    // 0x802C7878: mr
+    ctx->r[29] = ctx->r[4] | ctx->r[4];
+    // 0x802C787C: mr
+    ctx->r[30] = ctx->r[3] | ctx->r[3];
+    // 0x802C7880: lis
+    ctx->r[31] = 0x80000000;
+label_802C7884:
+    // 0x802C7884: bl
+    ctx->lr = 0x802C7888u; func_803095EC(ctx, mem); // bl
+    // 0x802C7888: subfc
+    { uint64_t t = (uint64_t)ctx->r[4] - (uint64_t)ctx->r[29]; ctx->r[4] = (uint32_t)t; ctx->set_xer_ca(!(t >> 32)); }
+    // 0x802C788C: subfe
+    { uint64_t t = (uint64_t)~ctx->r[30] + (uint64_t)ctx->r[3] + ctx->xer_ca(); ctx->r[3] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }
+    // 0x802C7890: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[31] + 248);
+    // 0x802C7894: rlwinm
+    ctx->r[5] = PPC_ROTL32(ctx->r[0], 30) & 0x3FFFFFFF;
+    // 0x802C7898: li
+    ctx->r[0] = 0x3E8;
+    // 0x802C789C: divwu
+    ctx->r[6] = ctx->r[5] / ctx->r[0];
+    // 0x802C78A0: li
+    ctx->r[5] = 0x0;
+    // 0x802C78A4: bl
+    ctx->lr = 0x802C78A8u; func_80329088(ctx, mem); // bl
+    // 0x802C78A8: li
+    ctx->r[6] = 0x7D0;
+    // 0x802C78AC: li
+    ctx->r[0] = 0x0;
+    // 0x802C78B0: xoris
+    ctx->r[5] = ctx->r[3] ^ 0x80000000;
+    // 0x802C78B4: xoris
+    ctx->r[3] = ctx->r[0] ^ 0x80000000;
+    // 0x802C78B8: subfc
+    { uint64_t t = (uint64_t)ctx->r[4] - (uint64_t)ctx->r[6]; ctx->r[0] = (uint32_t)t; ctx->set_xer_ca(!(t >> 32)); }
+    // 0x802C78BC: subfe
+    { uint64_t t = (uint64_t)~ctx->r[3] + (uint64_t)ctx->r[5] + ctx->xer_ca(); ctx->r[3] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }
+    // 0x802C78C0: subfe
+    { uint64_t t = (uint64_t)~ctx->r[5] + (uint64_t)ctx->r[5] + ctx->xer_ca(); ctx->r[3] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }
+    // 0x802C78C4: neg
+    ctx->r[3] = -ctx->r[3];
+    ctx->update_cr0((int32_t)ctx->r[3]);
+    // 0x802C78C8: bc
+    if (!ctx->get_cr_bit(2)) goto label_802C7884; // bf cr2
+label_802C78CC:
+    // 0x802C78CC: addi
+    ctx->r[11] = (int32_t)ctx->r[1] + 288;
+    // 0x802C78D0: bl
+    ctx->lr = 0x802C78D4u; func_80328F88(ctx, mem); // bl
+    // 0x802C78D4: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[1] + 292);
+    // 0x802C78D8: mtspr
+    ctx->lr = ctx->r[0];
+    // 0x802C78DC: addi
+    ctx->r[1] = (int32_t)ctx->r[1] + 288;
+    // 0x802C78E0: blr
+    return; // blr
+#endif
+}

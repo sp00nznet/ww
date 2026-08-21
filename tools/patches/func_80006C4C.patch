@@ -1,0 +1,173 @@
+# addr=0x80006C4C name=func_80006C4C from=recomp_0000.cpp
+// ---- func_80006C4C @ 0x80006C4C ----
+// PATCHED: Exception/trap handler setup. Accesses HW registers and TB counters
+// that aren't emulated. Not needed for recompiled code execution.
+void func_80006C4C(PPCContext* ctx, Memory* mem) {
+    return; // PATCHED: no-op
+#if 0 // Original recompiled code below
+label_80006C4C:
+    // 0x80006C4C: stwu
+    { uint32_t ea = ctx->r[1] + -144; MEM_WRITE32(ea, ctx->r[1]); ctx->r[1] = ea; }
+    // 0x80006C50: mfspr
+    ctx->r[0] = ctx->lr;
+    // 0x80006C54: stw
+    MEM_WRITE32(ctx->r[1] + 148, ctx->r[0]);
+    // 0x80006C58: addi
+    ctx->r[11] = (int32_t)ctx->r[1] + 144;
+    // 0x80006C5C: bl
+    ctx->lr = 0x80006C60u; func_80328F40(ctx, mem); // bl
+    // 0x80006C60: mr
+    ctx->r[31] = ctx->r[3] | ctx->r[3];
+    // 0x80006C64: mr
+    ctx->r[30] = ctx->r[4] | ctx->r[4];
+    // 0x80006C68: mr
+    ctx->r[29] = ctx->r[5] | ctx->r[5];
+    // 0x80006C6C: bc
+    if (!ctx->get_cr_bit(6)) goto label_80006C90; // bf cr6
+label_80006C70:
+    // 0x80006C70: stfd
+    MEM_WRITEF64(ctx->r[1] + 40, ctx->f[1]);
+    // 0x80006C74: stfd
+    MEM_WRITEF64(ctx->r[1] + 48, ctx->f[2]);
+    // 0x80006C78: stfd
+    MEM_WRITEF64(ctx->r[1] + 56, ctx->f[3]);
+    // 0x80006C7C: stfd
+    MEM_WRITEF64(ctx->r[1] + 64, ctx->f[4]);
+    // 0x80006C80: stfd
+    MEM_WRITEF64(ctx->r[1] + 72, ctx->f[5]);
+    // 0x80006C84: stfd
+    MEM_WRITEF64(ctx->r[1] + 80, ctx->f[6]);
+    // 0x80006C88: stfd
+    MEM_WRITEF64(ctx->r[1] + 88, ctx->f[7]);
+    // 0x80006C8C: stfd
+    MEM_WRITEF64(ctx->r[1] + 96, ctx->f[8]);
+label_80006C90:
+    // 0x80006C90: stw
+    MEM_WRITE32(ctx->r[1] + 8, ctx->r[3]);
+    // 0x80006C94: stw
+    MEM_WRITE32(ctx->r[1] + 12, ctx->r[4]);
+    // 0x80006C98: stw
+    MEM_WRITE32(ctx->r[1] + 16, ctx->r[5]);
+    // 0x80006C9C: stw
+    MEM_WRITE32(ctx->r[1] + 20, ctx->r[6]);
+    // 0x80006CA0: stw
+    MEM_WRITE32(ctx->r[1] + 24, ctx->r[7]);
+    // 0x80006CA4: stw
+    MEM_WRITE32(ctx->r[1] + 28, ctx->r[8]);
+    // 0x80006CA8: stw
+    MEM_WRITE32(ctx->r[1] + 32, ctx->r[9]);
+    // 0x80006CAC: stw
+    MEM_WRITE32(ctx->r[1] + 36, ctx->r[10]);
+    // 0x80006CB0: bl
+    ctx->lr = 0x80006CB4u; func_80304608(ctx, mem); // bl
+    // 0x80006CB4: addi
+    ctx->r[4] = (int32_t)ctx->r[1] + 104;
+    // 0x80006CB8: lis
+    ctx->r[0] = 0x3000000;
+    // 0x80006CBC: stw
+    MEM_WRITE32(ctx->r[1] + 104, ctx->r[0]);
+    // 0x80006CC0: addi
+    ctx->r[0] = (int32_t)ctx->r[1] + 152;
+    // 0x80006CC4: stw
+    MEM_WRITE32(ctx->r[1] + 108, ctx->r[0]);
+    // 0x80006CC8: addi
+    ctx->r[0] = (int32_t)ctx->r[1] + 8;
+    // 0x80006CCC: stw
+    MEM_WRITE32(ctx->r[1] + 112, ctx->r[0]);
+    // 0x80006CD0: mr
+    ctx->r[3] = ctx->r[29] | ctx->r[29];
+    // 0x80006CD4: bl
+    ctx->lr = 0x80006CD8u; func_8032BB2C(ctx, mem); // bl
+    // 0x80006CD8: lis
+    ctx->r[3] = 0x80340000;
+    // 0x80006CDC: addi
+    ctx->r[3] = (int32_t)ctx->r[3] + -29912;
+    // 0x80006CE0: addi
+    ctx->r[3] = (int32_t)ctx->r[3] + 101;
+    // 0x80006CE4: mr
+    ctx->r[4] = ctx->r[31] | ctx->r[31];
+    // 0x80006CE8: mr
+    ctx->r[5] = ctx->r[30] | ctx->r[30];
+    // 0x80006CEC: crxor
+    { bool a = ctx->get_cr_bit(6); bool b = ctx->get_cr_bit(6); ctx->set_cr_bit(6, a ^ b); }
+    // 0x80006CF0: bl
+    ctx->lr = 0x80006CF4u; func_80006950(ctx, mem); // bl
+    // 0x80006CF4: lis
+    ctx->r[3] = 0x80340000;
+    // 0x80006CF8: addi
+    ctx->r[3] = (int32_t)ctx->r[3] + -29912;
+    // 0x80006CFC: addi
+    ctx->r[3] = (int32_t)ctx->r[3] + 123;
+    // 0x80006D00: crxor
+    { bool a = ctx->get_cr_bit(6); bool b = ctx->get_cr_bit(6); ctx->set_cr_bit(6, a ^ b); }
+    // 0x80006D04: bl
+    ctx->lr = 0x80006D08u; func_80006950(ctx, mem); // bl
+    // 0x80006D08: li
+    ctx->r[30] = 0x0;
+    // 0x80006D0C: bl
+    ctx->lr = 0x80006D10u; func_80303B28(ctx, mem); // bl
+    // 0x80006D10: mr
+    ctx->r[29] = ctx->r[3] | ctx->r[3];
+    // 0x80006D14: lis
+    ctx->r[3] = 0x80340000;
+    // 0x80006D18: addi
+    ctx->r[31] = (int32_t)ctx->r[3] + -29912;
+    // 0x80006D1C: b
+    goto label_80006D3C; // b
+label_80006D20:
+    // 0x80006D20: addi
+    ctx->r[3] = (int32_t)ctx->r[31] + 161;
+    // 0x80006D24: mr
+    ctx->r[4] = ctx->r[29] | ctx->r[29];
+    // 0x80006D28: lwz
+    ctx->r[5] = MEM_READ32(ctx->r[29] + 0);
+    // 0x80006D2C: lwz
+    ctx->r[6] = MEM_READ32(ctx->r[29] + 4);
+    // 0x80006D30: crxor
+    { bool a = ctx->get_cr_bit(6); bool b = ctx->get_cr_bit(6); ctx->set_cr_bit(6, a ^ b); }
+    // 0x80006D34: bl
+    ctx->lr = 0x80006D38u; func_80006950(ctx, mem); // bl
+    // 0x80006D38: lwz
+    ctx->r[29] = MEM_READ32(ctx->r[29] + 0);
+label_80006D3C:
+    // 0x80006D3C: cmplwi
+    { uint32_t a = ctx->r[29]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80006D40: bc
+    if (ctx->get_cr_bit(2)) goto label_80006D5C; // bt cr2
+label_80006D44:
+    // 0x80006D44: addis
+    ctx->r[0] = (int32_t)ctx->r[29] + 0x10000;
+    // 0x80006D48: cmplwi
+    { uint32_t a = ctx->r[0]; uint32_t b = 65535; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80006D4C: bc
+    if (ctx->get_cr_bit(2)) goto label_80006D5C; // bt cr2
+label_80006D50:
+    // 0x80006D50: cmplwi
+    { uint32_t a = ctx->r[30]; uint32_t b = 16; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80006D54: addi
+    ctx->r[30] = (int32_t)ctx->r[30] + 1;
+    // 0x80006D58: bc
+    if (ctx->get_cr_bit(0)) goto label_80006D20; // bt cr0
+label_80006D5C:
+    // 0x80006D5C: lis
+    ctx->r[3] = 0x1230000;
+    // 0x80006D60: addi
+    ctx->r[0] = (int32_t)ctx->r[3] + 17767;
+    // 0x80006D64: stw
+    MEM_WRITE32(ctx->r[3] + 17767, ctx->r[0]);
+    // 0x80006D68: bl
+    ctx->lr = 0x80006D6Cu; func_8030150C(ctx, mem); // bl
+    // 0x80006D6C: addi
+    ctx->r[11] = (int32_t)ctx->r[1] + 144;
+    // 0x80006D70: bl
+    ctx->lr = 0x80006D74u; func_80328F8C(ctx, mem); // bl
+    // 0x80006D74: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[1] + 148);
+    // 0x80006D78: mtspr
+    ctx->lr = ctx->r[0];
+    // 0x80006D7C: addi
+    ctx->r[1] = (int32_t)ctx->r[1] + 144;
+    // 0x80006D80: blr
+    return; // blr
+#endif
+}

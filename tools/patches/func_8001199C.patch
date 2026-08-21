@@ -1,0 +1,7 @@
+# addr=0x8001199C name=func_8001199C from=recomp_0001.cpp
+// ---- func_8001199C @ 0x8001199C ----
+// PATCHED: Return fake heap pointer since JKR is replaced with bump allocator
+void func_8001199C(PPCContext* ctx, Memory* mem) {
+    ctx->r[3] = 0x80400010;  // Fake heap object
+    return;
+}

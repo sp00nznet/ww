@@ -1,0 +1,76 @@
+# addr=0x802CB8D0 name=func_802CB8D0 from=recomp_0067.cpp
+// ---- func_802CB8D0 @ 0x802CB8D0 ----
+// PATCHED: OSReport/printf debug output. Original writes to HW console registers
+// which can hang. No-op since we don't have a GameCube debug console.
+void func_802CB8D0(PPCContext* ctx, Memory* mem) {
+    return; // no-op
+#if 0
+label_802CB8D0:
+    // 0x802CB8D0: stwu
+    { uint32_t ea = ctx->r[1] + -128; MEM_WRITE32(ea, ctx->r[1]); ctx->r[1] = ea; }
+    // 0x802CB8D4: mfspr
+    ctx->r[0] = ctx->lr;
+    // 0x802CB8D8: stw
+    MEM_WRITE32(ctx->r[1] + 132, ctx->r[0]);
+    // 0x802CB8DC: bc
+    if (!ctx->get_cr_bit(6)) goto label_802CB900; // bf cr6
+label_802CB8E0:
+    // 0x802CB8E0: stfd
+    MEM_WRITEF64(ctx->r[1] + 40, ctx->f[1]);
+    // 0x802CB8E4: stfd
+    MEM_WRITEF64(ctx->r[1] + 48, ctx->f[2]);
+    // 0x802CB8E8: stfd
+    MEM_WRITEF64(ctx->r[1] + 56, ctx->f[3]);
+    // 0x802CB8EC: stfd
+    MEM_WRITEF64(ctx->r[1] + 64, ctx->f[4]);
+    // 0x802CB8F0: stfd
+    MEM_WRITEF64(ctx->r[1] + 72, ctx->f[5]);
+    // 0x802CB8F4: stfd
+    MEM_WRITEF64(ctx->r[1] + 80, ctx->f[6]);
+    // 0x802CB8F8: stfd
+    MEM_WRITEF64(ctx->r[1] + 88, ctx->f[7]);
+    // 0x802CB8FC: stfd
+    MEM_WRITEF64(ctx->r[1] + 96, ctx->f[8]);
+label_802CB900:
+    // 0x802CB900: stw
+    MEM_WRITE32(ctx->r[1] + 8, ctx->r[3]);
+    // 0x802CB904: stw
+    MEM_WRITE32(ctx->r[1] + 12, ctx->r[4]);
+    // 0x802CB908: stw
+    MEM_WRITE32(ctx->r[1] + 16, ctx->r[5]);
+    // 0x802CB90C: stw
+    MEM_WRITE32(ctx->r[1] + 20, ctx->r[6]);
+    // 0x802CB910: stw
+    MEM_WRITE32(ctx->r[1] + 24, ctx->r[7]);
+    // 0x802CB914: stw
+    MEM_WRITE32(ctx->r[1] + 28, ctx->r[8]);
+    // 0x802CB918: stw
+    MEM_WRITE32(ctx->r[1] + 32, ctx->r[9]);
+    // 0x802CB91C: stw
+    MEM_WRITE32(ctx->r[1] + 36, ctx->r[10]);
+    // 0x802CB920: addi
+    ctx->r[4] = (int32_t)ctx->r[1] + 104;
+    // 0x802CB924: lis
+    ctx->r[0] = 0x1000000;
+    // 0x802CB928: stw
+    MEM_WRITE32(ctx->r[1] + 104, ctx->r[0]);
+    // 0x802CB92C: addi
+    ctx->r[0] = (int32_t)ctx->r[1] + 136;
+    // 0x802CB930: stw
+    MEM_WRITE32(ctx->r[1] + 108, ctx->r[0]);
+    // 0x802CB934: addi
+    ctx->r[0] = (int32_t)ctx->r[1] + 8;
+    // 0x802CB938: stw
+    MEM_WRITE32(ctx->r[1] + 112, ctx->r[0]);
+    // 0x802CB93C: bl
+    ctx->lr = 0x802CB940u; func_802CB830(ctx, mem); // bl
+    // 0x802CB940: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[1] + 132);
+    // 0x802CB944: mtspr
+    ctx->lr = ctx->r[0];
+    // 0x802CB948: addi
+    ctx->r[1] = (int32_t)ctx->r[1] + 128;
+    // 0x802CB94C: blr
+    return; // blr
+#endif // Original OSReport disabled
+}

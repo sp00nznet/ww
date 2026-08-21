@@ -1,0 +1,67 @@
+# addr=0x803021A4 name=func_803021A4 from=recomp_0074.cpp
+// ---- func_803021A4 @ 0x803021A4 ----
+// PATCHED: After enqueueing the async DVD request, immediately invoke the
+// completion callback to make the operation synchronous. On real hardware,
+// a DI interrupt triggers the callback after disc read completes.
+void func_803021A4(PPCContext* ctx, Memory* mem) {
+    uint32_t _callback = ctx->r[7]; // Save callback before prologue clobbers it
+label_803021A4:
+    // 0x803021A4: mfspr
+    ctx->r[0] = ctx->lr;
+    // 0x803021A8: stw
+    MEM_WRITE32(ctx->r[1] + 4, ctx->r[0]);
+    // 0x803021AC: stwu
+    { uint32_t ea = ctx->r[1] + -56; MEM_WRITE32(ea, ctx->r[1]); ctx->r[1] = ea; }
+    // 0x803021B0: stmw
+    { uint32_t ea = ctx->r[1] + 36; for (int i = 27; i < 32; i++) { MEM_WRITE32(ea, ctx->r[i]); ea += 4; } }
+    // 0x803021B4: addi
+    ctx->r[27] = (int32_t)ctx->r[3] + 0;
+    // 0x803021B8: addi
+    ctx->r[29] = (int32_t)ctx->r[5] + 0;
+    // 0x803021BC: addi
+    ctx->r[28] = (int32_t)ctx->r[6] + 0;
+    // 0x803021C0: addi
+    ctx->r[30] = (int32_t)ctx->r[7] + 0;
+    // 0x803021C4: bl
+    ctx->lr = 0x803021C8u; func_80304608(ctx, mem); // bl
+    // 0x803021C8: li
+    ctx->r[0] = 0x0;
+    // 0x803021CC: stw
+    MEM_WRITE32(ctx->r[27] + 28, ctx->r[0]);
+    // 0x803021D0: mr
+    ctx->r[31] = ctx->r[3] | ctx->r[3];
+    // 0x803021D4: stw
+    MEM_WRITE32(ctx->r[27] + 24, ctx->r[0]);
+    // 0x803021D8: bl
+    ctx->lr = 0x803021DCu; func_8030960C(ctx, mem); // bl
+    // 0x803021DC: addc
+    { uint64_t t = (uint64_t)ctx->r[28] + (uint64_t)ctx->r[4]; ctx->r[6] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }
+    // 0x803021E0: adde
+    { uint64_t t = (uint64_t)ctx->r[29] + (uint64_t)ctx->r[3] + ctx->xer_ca(); ctx->r[5] = (uint32_t)t; ctx->set_xer_ca(t >> 32); }
+    // 0x803021E4: addi
+    ctx->r[3] = (int32_t)ctx->r[27] + 0;
+    // 0x803021E8: addi
+    ctx->r[7] = (int32_t)ctx->r[30] + 0;
+    // 0x803021EC: bl
+    ctx->lr = 0x803021F0u; func_80301F54(ctx, mem); // bl
+    // NOTE: Do NOT invoke the callback here. The callback resets scene state
+    // to -1 which breaks the scene loading flow. The callback should only fire
+    // after actual DVD data is read, which happens asynchronously. For now,
+    // the game's per-frame polling (func_8000AB1C at state==2) handles
+    // completion detection.
+    // TODO: Implement proper async DVD queue processing with disc reads.
+    // 0x803021F0: mr
+    ctx->r[3] = ctx->r[31] | ctx->r[31];
+    // 0x803021F4: bl
+    ctx->lr = 0x803021F8u; func_80304630(ctx, mem); // bl
+    // 0x803021F8: lmw
+    { uint32_t ea = ctx->r[1] + 36; for (int i = 27; i < 32; i++) { ctx->r[i] = MEM_READ32(ea); ea += 4; } }
+    // 0x803021FC: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[1] + 60);
+    // 0x80302200: addi
+    ctx->r[1] = (int32_t)ctx->r[1] + 56;
+    // 0x80302204: mtspr
+    ctx->lr = ctx->r[0];
+    // 0x80302208: blr
+    return; // blr
+}
