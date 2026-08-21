@@ -1,4 +1,4 @@
-# addr=0x802C79FC name=func_802C79FC from=recomp_0066.cpp
+# addr=0x802C79FC name=func_802C79FC from=recomp_0057.cpp
 // ---- func_802C79FC @ 0x802C79FC ----
 // PATCHED: Assert/panic handler. Original prints debug message then may call
 // PPCHalt or spin. We just return so game can continue past assertions.

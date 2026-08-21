@@ -1,4 +1,4 @@
-# addr=0x802B6FEC name=func_802B6FEC from=recomp_0064.cpp
+# addr=0x802B6FEC name=func_802B6FEC from=recomp_0055.cpp
 // ---- func_802B6FEC @ 0x802B6FEC ----
 // PATCHED: JKRFileLoader::getGlbResource — delegate to JKR mount system.
 // The real implementation is registered in the func_table by jkr::register_os_funcs.

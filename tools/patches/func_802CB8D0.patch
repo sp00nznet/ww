@@ -1,4 +1,4 @@
-# addr=0x802CB8D0 name=func_802CB8D0 from=recomp_0067.cpp
+# addr=0x802CB8D0 name=func_802CB8D0 from=recomp_0058.cpp
 // ---- func_802CB8D0 @ 0x802CB8D0 ----
 // PATCHED: OSReport/printf debug output. Original writes to HW console registers
 // which can hang. No-op since we don't have a GameCube debug console.

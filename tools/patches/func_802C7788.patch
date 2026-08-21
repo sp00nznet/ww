@@ -1,4 +1,4 @@
-# addr=0x802C7788 name=func_802C7788 from=recomp_0066.cpp
+# addr=0x802C7788 name=func_802C7788 from=recomp_0057.cpp
 // ---- func_802C7788 @ 0x802C7788 ----
 // PATCHED: Original spins on Time Base register (VIWaitForRetrace).
 // TB is never incremented in recompiled code, so this hangs forever.

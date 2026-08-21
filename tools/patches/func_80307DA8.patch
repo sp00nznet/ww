@@ -1,0 +1,321 @@
+# addr=0x80307DA8 name=func_80307DA8 from=recomp_0066.cpp
+// ---- func_80307DA8 @ 0x80307DA8 ----
+void func_80307DA8(PPCContext* ctx, Memory* mem) {
+    // PATCHED: DVD wait that yields to the OS thread scheduler. It reads the
+    // current thread from 0x800000E4, dispatches through the scheduler, sets
+    // current thread to 0, and loops. With no interrupts and no thread
+    // switching nothing ever becomes runnable, so it spins at ~31k iterations
+    // a second and the frame never advances. Returning 0 takes the same exit
+    // the "nothing to wait for" path at 0x80307EB4 already uses; our launcher
+    // pumps the DVD queue itself.
+    ctx->r[3] = 0;
+    return;
+#if 0 // Original recompiled code below
+label_80307DA8:
+    // 0x80307DA8: mfspr
+    ctx->r[0] = ctx->lr;
+    // 0x80307DAC: lis
+    ctx->r[4] = 0x803F0000;
+    // 0x80307DB0: stw
+    MEM_WRITE32(ctx->r[1] + 4, ctx->r[0]);
+    // 0x80307DB4: stwu
+    { uint32_t ea = ctx->r[1] + -24; MEM_WRITE32(ea, ctx->r[1]); ctx->r[1] = ea; }
+    // 0x80307DB8: stw
+    MEM_WRITE32(ctx->r[1] + 20, ctx->r[31]);
+    // 0x80307DBC: addi
+    ctx->r[31] = (int32_t)ctx->r[4] + 696;
+    // 0x80307DC0: stw
+    MEM_WRITE32(ctx->r[1] + 16, ctx->r[30]);
+    // 0x80307DC4: addi
+    ctx->r[30] = (int32_t)ctx->r[3] + 0;
+    // 0x80307DC8: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[13] + -26280);
+    // 0x80307DCC: cmpwi
+    { int32_t a = (int32_t)ctx->r[0]; int32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307DD0: bc
+    if (!ctx->get_cr_bit(1)) goto label_80307DDC; // bf cr1
+label_80307DD4:
+    // 0x80307DD4: li
+    ctx->r[3] = 0x0;
+    // 0x80307DD8: b
+    goto label_80307FB8; // b
+label_80307DDC:
+    // 0x80307DDC: bl
+    ctx->lr = 0x80307DE0u; func_803039C4(ctx, mem); // bl
+    // 0x80307DE0: lis
+    ctx->r[4] = 0x80000000;
+    // 0x80307DE4: lwz
+    ctx->r[6] = MEM_READ32(ctx->r[4] + 228);
+    // 0x80307DE8: cmplw
+    { uint32_t a = ctx->r[3]; uint32_t b = ctx->r[6]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307DEC: addi
+    ctx->r[3] = (int32_t)ctx->r[6] + 0;
+    // 0x80307DF0: bc
+    if (ctx->get_cr_bit(2)) goto label_80307DFC; // bt cr2
+label_80307DF4:
+    // 0x80307DF4: li
+    ctx->r[3] = 0x0;
+    // 0x80307DF8: b
+    goto label_80307FB8; // b
+label_80307DFC:
+    // 0x80307DFC: cmplwi
+    { uint32_t a = ctx->r[6]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307E00: bc
+    if (ctx->get_cr_bit(2)) goto label_80307EBC; // bt cr2
+label_80307E04:
+    // 0x80307E04: lhz
+    ctx->r[0] = MEM_READ16(ctx->r[6] + 712);
+    // 0x80307E08: cmplwi
+    { uint32_t a = ctx->r[0]; uint32_t b = 2; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307E0C: bc
+    if (!ctx->get_cr_bit(2)) goto label_80307E9C; // bf cr2
+label_80307E10:
+    // 0x80307E10: cmpwi
+    { int32_t a = (int32_t)ctx->r[30]; int32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307E14: bc
+    if (!ctx->get_cr_bit(2)) goto label_80307E34; // bf cr2
+label_80307E18:
+    // 0x80307E18: lwz
+    ctx->r[4] = MEM_READ32(ctx->r[13] + -26288);
+    // 0x80307E1C: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[6] + 720);
+    // 0x80307E20: cntlzw
+    ctx->r[4] = PPC_CNTLZW(ctx->r[4]);
+    // 0x80307E24: cmpw
+    { int32_t a = (int32_t)ctx->r[0]; int32_t b = (int32_t)ctx->r[4]; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307E28: bc
+    if (ctx->get_cr_bit(1)) goto label_80307E34; // bt cr1
+label_80307E2C:
+    // 0x80307E2C: li
+    ctx->r[3] = 0x0;
+    // 0x80307E30: b
+    goto label_80307FB8; // b
+label_80307E34:
+    // 0x80307E34: li
+    ctx->r[0] = 0x1;
+    // 0x80307E38: sth
+    MEM_WRITE16(ctx->r[6] + 712, (uint16_t)ctx->r[0]);
+    // 0x80307E3C: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[6] + 720);
+    // 0x80307E40: rlwinm
+    ctx->r[0] = PPC_ROTL32(ctx->r[0], 3) & 0xFFFFFFF8;
+    // 0x80307E44: add
+    ctx->r[0] = ctx->r[31] + ctx->r[0];
+    // 0x80307E48: stw
+    MEM_WRITE32(ctx->r[6] + 732, ctx->r[0]);
+    // 0x80307E4C: lwz
+    ctx->r[5] = MEM_READ32(ctx->r[6] + 732);
+    // 0x80307E50: lwz
+    ctx->r[4] = MEM_READ32(ctx->r[5] + 4);
+    // 0x80307E54: cmplwi
+    { uint32_t a = ctx->r[4]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307E58: bc
+    if (!ctx->get_cr_bit(2)) goto label_80307E64; // bf cr2
+label_80307E5C:
+    // 0x80307E5C: stw
+    MEM_WRITE32(ctx->r[5] + 0, ctx->r[6]);
+    // 0x80307E60: b
+    goto label_80307E68; // b
+label_80307E64:
+    // 0x80307E64: stw
+    MEM_WRITE32(ctx->r[4] + 736, ctx->r[6]);
+label_80307E68:
+    // 0x80307E68: stw
+    MEM_WRITE32(ctx->r[6] + 740, ctx->r[4]);
+    // 0x80307E6C: li
+    ctx->r[0] = 0x0;
+    // 0x80307E70: li
+    ctx->r[4] = 0x1;
+    // 0x80307E74: stw
+    MEM_WRITE32(ctx->r[6] + 736, ctx->r[0]);
+    // 0x80307E78: lwz
+    ctx->r[5] = MEM_READ32(ctx->r[6] + 732);
+    // 0x80307E7C: stw
+    MEM_WRITE32(ctx->r[5] + 4, ctx->r[6]);
+    // 0x80307E80: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[6] + 720);
+    // 0x80307E84: lwz
+    ctx->r[5] = MEM_READ32(ctx->r[13] + -26288);
+    // 0x80307E88: subfic
+    { uint64_t t = (uint64_t)(uint32_t)31 - (uint64_t)ctx->r[0]; ctx->r[0] = (uint32_t)t; ctx->set_xer_ca(!(t >> 32)); }
+    // 0x80307E8C: slw
+    ctx->r[0] = (ctx->r[0] & 0x20) ? 0 : (ctx->r[4] << (ctx->r[0] & 0x1F));
+    // 0x80307E90: or
+    ctx->r[0] = ctx->r[5] | ctx->r[0];
+    // 0x80307E94: stw
+    MEM_WRITE32(ctx->r[13] + -26288, ctx->r[0]);
+    // 0x80307E98: stw
+    MEM_WRITE32(ctx->r[13] + -26284, ctx->r[4]);
+label_80307E9C:
+    // 0x80307E9C: lhz
+    ctx->r[0] = MEM_READ16(ctx->r[6] + 418);
+    // 0x80307EA0: rlwinm
+    ctx->r[0] = ctx->r[0] & 0x00000002;
+    ctx->update_cr0((int32_t)ctx->r[0]);
+    // 0x80307EA4: bc
+    if (!ctx->get_cr_bit(2)) goto label_80307EBC; // bf cr2
+label_80307EA8:
+    // 0x80307EA8: bl
+    ctx->lr = 0x80307EACu; func_803039D0(ctx, mem); // bl
+    // 0x80307EAC: cmplwi
+    { uint32_t a = ctx->r[3]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307EB0: bc
+    if (ctx->get_cr_bit(2)) goto label_80307EBC; // bt cr2
+label_80307EB4:
+    // 0x80307EB4: li
+    ctx->r[3] = 0x0;
+    // 0x80307EB8: b
+    goto label_80307FB8; // b
+label_80307EBC:
+    // 0x80307EBC: lwz
+    ctx->r[12] = MEM_READ32(ctx->r[13] + -31240);
+    // 0x80307EC0: lis
+    ctx->r[30] = 0x80000000;
+    // 0x80307EC4: lwz
+    ctx->r[3] = MEM_READ32(ctx->r[30] + 228);
+    // 0x80307EC8: li
+    ctx->r[4] = 0x0;
+    // 0x80307ECC: mtspr
+    ctx->lr = ctx->r[12];
+    // 0x80307ED0: bclrl
+    { uint32_t target = ctx->lr; ctx->lr = 0x80307ED4u; CALL_INDIRECT(target, ctx, mem); } // blrl
+    // 0x80307ED4: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[13] + -26288);
+    // 0x80307ED8: li
+    ctx->r[3] = 0x0;
+    // 0x80307EDC: stw
+    MEM_WRITE32(ctx->r[30] + 228, ctx->r[3]);
+    // 0x80307EE0: cmplwi
+    { uint32_t a = ctx->r[0]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307EE4: bc
+    if (!ctx->get_cr_bit(2)) goto label_80307F18; // bf cr2
+label_80307EE8:
+    // 0x80307EE8: addi
+    ctx->r[3] = (int32_t)ctx->r[31] + 1840;
+    // 0x80307EEC: bl
+    ctx->lr = 0x80307EF0u; func_80303968(ctx, mem); // bl
+label_80307EF0:
+    // 0x80307EF0: bl
+    ctx->lr = 0x80307EF4u; func_8030461C(ctx, mem); // bl
+label_80307EF4:
+    // 0x80307EF4: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[13] + -26288);
+    // 0x80307EF8: cmplwi
+    { uint32_t a = ctx->r[0]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307EFC: bc
+    if (ctx->get_cr_bit(2)) goto label_80307EF4; // bt cr2
+label_80307F00:
+    // 0x80307F00: bl
+    ctx->lr = 0x80307F04u; func_80304608(ctx, mem); // bl
+    // 0x80307F04: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[13] + -26288);
+    // 0x80307F08: cmplwi
+    { uint32_t a = ctx->r[0]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307F0C: bc
+    if (ctx->get_cr_bit(2)) goto label_80307EF0; // bt cr2
+label_80307F10:
+    // 0x80307F10: addi
+    ctx->r[3] = (int32_t)ctx->r[31] + 1840;
+    // 0x80307F14: bl
+    ctx->lr = 0x80307F18u; func_80303B30(ctx, mem); // bl
+label_80307F18:
+    // 0x80307F18: li
+    ctx->r[3] = 0x0;
+    // 0x80307F1C: stw
+    MEM_WRITE32(ctx->r[13] + -26284, ctx->r[3]);
+    // 0x80307F20: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[13] + -26288);
+    // 0x80307F24: cntlzw
+    ctx->r[7] = PPC_CNTLZW(ctx->r[0]);
+    // 0x80307F28: rlwinm
+    ctx->r[0] = PPC_ROTL32(ctx->r[7], 3) & 0xFFFFFFF8;
+    // 0x80307F2C: add
+    ctx->r[4] = ctx->r[31] + ctx->r[0];
+    // 0x80307F30: lwz
+    ctx->r[5] = MEM_READ32(ctx->r[4] + 0);
+    // 0x80307F34: lwz
+    ctx->r[6] = MEM_READ32(ctx->r[5] + 736);
+    // 0x80307F38: addi
+    ctx->r[30] = (int32_t)ctx->r[5] + 0;
+    // 0x80307F3C: cmplwi
+    { uint32_t a = ctx->r[6]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307F40: bc
+    if (!ctx->get_cr_bit(2)) goto label_80307F4C; // bf cr2
+label_80307F44:
+    // 0x80307F44: stw
+    MEM_WRITE32(ctx->r[4] + 4, ctx->r[3]);
+    // 0x80307F48: b
+    goto label_80307F50; // b
+label_80307F4C:
+    // 0x80307F4C: stw
+    MEM_WRITE32(ctx->r[6] + 740, ctx->r[3]);
+label_80307F50:
+    // 0x80307F50: stw
+    MEM_WRITE32(ctx->r[4] + 0, ctx->r[6]);
+    // 0x80307F54: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[4] + 0);
+    // 0x80307F58: cmplwi
+    { uint32_t a = ctx->r[0]; uint32_t b = 0; uint32_t c = (a < b) ? 8 : (a > b) ? 4 : 2; if (ctx->xer_so()) c |= 1; ctx->set_cr_field(0, c); }
+    // 0x80307F5C: bc
+    if (!ctx->get_cr_bit(2)) goto label_80307F78; // bf cr2
+label_80307F60:
+    // 0x80307F60: subfic
+    { uint64_t t = (uint64_t)(uint32_t)31 - (uint64_t)ctx->r[7]; ctx->r[0] = (uint32_t)t; ctx->set_xer_ca(!(t >> 32)); }
+    // 0x80307F64: lwz
+    ctx->r[4] = MEM_READ32(ctx->r[13] + -26288);
+    // 0x80307F68: li
+    ctx->r[3] = 0x1;
+    // 0x80307F6C: slw
+    ctx->r[0] = (ctx->r[0] & 0x20) ? 0 : (ctx->r[3] << (ctx->r[0] & 0x1F));
+    // 0x80307F70: andc
+    ctx->r[0] = ctx->r[4] & ~ctx->r[0];
+    // 0x80307F74: stw
+    MEM_WRITE32(ctx->r[13] + -26288, ctx->r[0]);
+label_80307F78:
+    // 0x80307F78: li
+    ctx->r[0] = 0x0;
+    // 0x80307F7C: stw
+    MEM_WRITE32(ctx->r[30] + 732, ctx->r[0]);
+    // 0x80307F80: li
+    ctx->r[0] = 0x2;
+    // 0x80307F84: lis
+    ctx->r[31] = 0x80000000;
+    // 0x80307F88: sth
+    MEM_WRITE16(ctx->r[30] + 712, (uint16_t)ctx->r[0]);
+    // 0x80307F8C: mr
+    ctx->r[4] = ctx->r[30] | ctx->r[30];
+    // 0x80307F90: lwz
+    ctx->r[12] = MEM_READ32(ctx->r[13] + -31240);
+    // 0x80307F94: lwz
+    ctx->r[3] = MEM_READ32(ctx->r[31] + 228);
+    // 0x80307F98: mtspr
+    ctx->lr = ctx->r[12];
+    // 0x80307F9C: bclrl
+    { uint32_t target = ctx->lr; ctx->lr = 0x80307FA0u; CALL_INDIRECT(target, ctx, mem); } // blrl
+    // 0x80307FA0: stw
+    MEM_WRITE32(ctx->r[31] + 228, ctx->r[30]);
+    // 0x80307FA4: mr
+    ctx->r[3] = ctx->r[30] | ctx->r[30];
+    // 0x80307FA8: bl
+    ctx->lr = 0x80307FACu; func_80303968(ctx, mem); // bl
+    // 0x80307FAC: mr
+    ctx->r[3] = ctx->r[30] | ctx->r[30];
+    // 0x80307FB0: bl
+    ctx->lr = 0x80307FB4u; func_80303A50(ctx, mem); // bl
+    // 0x80307FB4: mr
+    ctx->r[3] = ctx->r[30] | ctx->r[30];
+label_80307FB8:
+    // 0x80307FB8: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[1] + 28);
+    // 0x80307FBC: lwz
+    ctx->r[31] = MEM_READ32(ctx->r[1] + 20);
+    // 0x80307FC0: lwz
+    ctx->r[30] = MEM_READ32(ctx->r[1] + 16);
+    // 0x80307FC4: addi
+    ctx->r[1] = (int32_t)ctx->r[1] + 24;
+    // 0x80307FC8: mtspr
+    ctx->lr = ctx->r[0];
+    // 0x80307FCC: blr
+    return; // blr
+#endif
+}

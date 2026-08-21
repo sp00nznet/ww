@@ -1,4 +1,4 @@
-# addr=0x803021A4 name=func_803021A4 from=recomp_0074.cpp
+# addr=0x803021A4 name=func_803021A4 from=recomp_0065.cpp
 // ---- func_803021A4 @ 0x803021A4 ----
 // PATCHED: After enqueueing the async DVD request, immediately invoke the
 // completion callback to make the operation synchronous. On real hardware,
