@@ -1,0 +1,76 @@
+# addr=0x802C79FC name=func_802C79FC from=recomp_0066.cpp
+// ---- func_802C79FC @ 0x802C79FC ----
+// PATCHED: Assert/panic handler. Original prints debug message then may call
+// PPCHalt or spin. We just return so game can continue past assertions.
+void func_802C79FC(PPCContext* ctx, Memory* mem) {
+    return; // PATCHED: no-op (assert handler)
+#if 0 // Original recompiled code below
+label_802C79FC:
+    // 0x802C79FC: stwu
+    { uint32_t ea = ctx->r[1] + -128; MEM_WRITE32(ea, ctx->r[1]); ctx->r[1] = ea; }
+    // 0x802C7A00: mfspr
+    ctx->r[0] = ctx->lr;
+    // 0x802C7A04: stw
+    MEM_WRITE32(ctx->r[1] + 132, ctx->r[0]);
+    // 0x802C7A08: bc
+    if (!ctx->get_cr_bit(6)) goto label_802C7A2C; // bf cr6
+label_802C7A0C:
+    // 0x802C7A0C: stfd
+    MEM_WRITEF64(ctx->r[1] + 40, ctx->f[1]);
+    // 0x802C7A10: stfd
+    MEM_WRITEF64(ctx->r[1] + 48, ctx->f[2]);
+    // 0x802C7A14: stfd
+    MEM_WRITEF64(ctx->r[1] + 56, ctx->f[3]);
+    // 0x802C7A18: stfd
+    MEM_WRITEF64(ctx->r[1] + 64, ctx->f[4]);
+    // 0x802C7A1C: stfd
+    MEM_WRITEF64(ctx->r[1] + 72, ctx->f[5]);
+    // 0x802C7A20: stfd
+    MEM_WRITEF64(ctx->r[1] + 80, ctx->f[6]);
+    // 0x802C7A24: stfd
+    MEM_WRITEF64(ctx->r[1] + 88, ctx->f[7]);
+    // 0x802C7A28: stfd
+    MEM_WRITEF64(ctx->r[1] + 96, ctx->f[8]);
+label_802C7A2C:
+    // 0x802C7A2C: stw
+    MEM_WRITE32(ctx->r[1] + 8, ctx->r[3]);
+    // 0x802C7A30: stw
+    MEM_WRITE32(ctx->r[1] + 12, ctx->r[4]);
+    // 0x802C7A34: stw
+    MEM_WRITE32(ctx->r[1] + 16, ctx->r[5]);
+    // 0x802C7A38: stw
+    MEM_WRITE32(ctx->r[1] + 20, ctx->r[6]);
+    // 0x802C7A3C: stw
+    MEM_WRITE32(ctx->r[1] + 24, ctx->r[7]);
+    // 0x802C7A40: stw
+    MEM_WRITE32(ctx->r[1] + 28, ctx->r[8]);
+    // 0x802C7A44: stw
+    MEM_WRITE32(ctx->r[1] + 32, ctx->r[9]);
+    // 0x802C7A48: stw
+    MEM_WRITE32(ctx->r[1] + 36, ctx->r[10]);
+    // 0x802C7A4C: addi
+    ctx->r[7] = (int32_t)ctx->r[1] + 104;
+    // 0x802C7A50: lis
+    ctx->r[0] = 0x4000000;
+    // 0x802C7A54: stw
+    MEM_WRITE32(ctx->r[1] + 104, ctx->r[0]);
+    // 0x802C7A58: addi
+    ctx->r[0] = (int32_t)ctx->r[1] + 136;
+    // 0x802C7A5C: stw
+    MEM_WRITE32(ctx->r[1] + 108, ctx->r[0]);
+    // 0x802C7A60: addi
+    ctx->r[0] = (int32_t)ctx->r[1] + 8;
+    // 0x802C7A64: stw
+    MEM_WRITE32(ctx->r[1] + 112, ctx->r[0]);
+    // 0x802C7A68: bl
+    ctx->lr = 0x802C7A6Cu; func_802C78E4(ctx, mem); // bl
+    // 0x802C7A6C: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[1] + 132);
+    // 0x802C7A70: mtspr
+    ctx->lr = ctx->r[0];
+    // 0x802C7A74: addi
+    ctx->r[1] = (int32_t)ctx->r[1] + 128;
+    // 0x802C7A78: blr
+    return; // blr
+#endif
+}

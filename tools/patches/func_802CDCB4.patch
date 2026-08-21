@@ -1,0 +1,59 @@
+# addr=0x802CDCB4 name=func_802CDCB4 from=recomp_0067.cpp
+// ---- func_802CDCB4 @ 0x802CDCB4 ----
+// PATCHED: Camera matrix update → loads GX position matrix via GX FIFO.
+// GX FIFO writes to 0xCC008000 which is not emulated. No-op since D3D11
+// handles rendering independently.
+void func_802CDCB4(PPCContext* ctx, Memory* mem) {
+    return; // PATCHED: no-op
+#if 0
+label_802CDCB4:
+    // 0x802CDCB4: stwu
+    { uint32_t ea = ctx->r[1] + -16; MEM_WRITE32(ea, ctx->r[1]); ctx->r[1] = ea; }
+    // 0x802CDCB8: mfspr
+    ctx->r[0] = ctx->lr;
+    // 0x802CDCBC: stw
+    MEM_WRITE32(ctx->r[1] + 20, ctx->r[0]);
+    // 0x802CDCC0: stw
+    MEM_WRITE32(ctx->r[1] + 12, ctx->r[31]);
+    // 0x802CDCC4: mr
+    ctx->r[31] = ctx->r[3] | ctx->r[3];
+    // 0x802CDCC8: bl
+    ctx->lr = 0x802CDCCCu; func_802CD0FC(ctx, mem); // bl
+    // 0x802CDCCC: addi
+    ctx->r[3] = (int32_t)ctx->r[31] + 64;
+    // 0x802CDCD0: lfs
+    ctx->f[1] = (double)MEM_READF32(ctx->r[31] + 192); ctx->ps[1][0] = ctx->ps[1][1] = MEM_READF32(ctx->r[31] + 192);
+    // 0x802CDCD4: lfs
+    ctx->f[2] = (double)MEM_READF32(ctx->r[2] + -13612); ctx->ps[2][0] = ctx->ps[2][1] = MEM_READF32(ctx->r[2] + -13612);
+    // 0x802CDCD8: lfs
+    ctx->f[0] = (double)MEM_READF32(ctx->r[31] + 200); ctx->ps[0][0] = ctx->ps[0][1] = MEM_READF32(ctx->r[31] + 200);
+    // 0x802CDCDC: fadds
+    ctx->f[2] = (double)((float)ctx->f[2] + (float)ctx->f[0]); ctx->ps[2][0] = (float)ctx->f[2];
+    // 0x802CDCE0: lfs
+    ctx->f[3] = (double)MEM_READF32(ctx->r[31] + 188); ctx->ps[3][0] = ctx->ps[3][1] = MEM_READF32(ctx->r[31] + 188);
+    // 0x802CDCE4: lfs
+    ctx->f[4] = (double)MEM_READF32(ctx->r[31] + 196); ctx->ps[4][0] = ctx->ps[4][1] = MEM_READF32(ctx->r[31] + 196);
+    // 0x802CDCE8: lfs
+    ctx->f[5] = (double)MEM_READF32(ctx->r[31] + 204); ctx->ps[5][0] = ctx->ps[5][1] = MEM_READF32(ctx->r[31] + 204);
+    // 0x802CDCEC: lfs
+    ctx->f[6] = (double)MEM_READF32(ctx->r[31] + 208); ctx->ps[6][0] = ctx->ps[6][1] = MEM_READF32(ctx->r[31] + 208);
+    // 0x802CDCF0: bl
+    ctx->lr = 0x802CDCF4u; func_8030DC48(ctx, mem); // bl
+    // 0x802CDCF4: addi
+    ctx->r[3] = (int32_t)ctx->r[31] + 64;
+    // 0x802CDCF8: li
+    ctx->r[4] = 0x1;
+    // 0x802CDCFC: bl
+    ctx->lr = 0x802CDD00u; func_80326D64(ctx, mem); // bl
+    // 0x802CDD00: lwz
+    ctx->r[31] = MEM_READ32(ctx->r[1] + 12);
+    // 0x802CDD04: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[1] + 20);
+    // 0x802CDD08: mtspr
+    ctx->lr = ctx->r[0];
+    // 0x802CDD0C: addi
+    ctx->r[1] = (int32_t)ctx->r[1] + 16;
+    // 0x802CDD10: blr
+    return; // blr
+#endif
+}

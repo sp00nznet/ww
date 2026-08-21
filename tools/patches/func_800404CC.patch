@@ -1,0 +1,60 @@
+# addr=0x800404CC name=func_800404CC from=recomp_0006.cpp
+// ---- func_800404CC @ 0x800404CC ----
+// PATCHED: Original waits for GX draw-done interrupt. No-op in recompiled code.
+// func_800404CC: dispatches a callback (r3=fn, r4=arg) inside pre/post
+// fapGm setup. In fapGm_Execute natural boot this IS the draw-dispatch
+// step (fapGm passes r3=0x8003D8B8, r4=0x8003D898). In forced-boot we
+// issue our own draw via direct func_8003D7E0(0x8003E390) and then call
+// this with stale r3 — which would CALL_INDIRECT garbage if the body
+// ran. Gate on WW_NATURAL_BOOT so forced-boot stays no-op.
+extern "C" int ww_natural_boot_active();
+extern "C" void ww_log_draw_dispatch(uint32_t cb, uint32_t arg);
+void func_800404CC(PPCContext* ctx, Memory* mem) {
+    if (!ww_natural_boot_active()) {
+        return;  // forced-boot: keep no-op (caller's r3/r4 are stale)
+    }
+    ww_log_draw_dispatch(ctx->r[3], ctx->r[4]);
+label_800404CC:
+    // 0x800404CC: stwu
+    { uint32_t ea = ctx->r[1] + -16; MEM_WRITE32(ea, ctx->r[1]); ctx->r[1] = ea; }
+    // 0x800404D0: mfspr
+    ctx->r[0] = ctx->lr;
+    // 0x800404D4: stw
+    MEM_WRITE32(ctx->r[1] + 20, ctx->r[0]);
+    // 0x800404D8: stw
+    MEM_WRITE32(ctx->r[1] + 12, ctx->r[31]);
+    // 0x800404DC: stw
+    MEM_WRITE32(ctx->r[1] + 8, ctx->r[30]);
+    // 0x800404E0: mr
+    ctx->r[30] = ctx->r[3] | ctx->r[3];
+    // 0x800404E4: mr
+    ctx->r[31] = ctx->r[4] | ctx->r[4];
+    // 0x800404E8: bl
+    ctx->lr = 0x800404ECu; func_8024138C(ctx, mem); // bl
+    // 0x800404EC: mr
+    ctx->r[3] = ctx->r[31] | ctx->r[31];
+    // 0x800404F0: mr
+    ctx->r[12] = ctx->r[30] | ctx->r[30];
+    // 0x800404F4: mtspr
+    ctx->ctr = ctx->r[12];
+    // 0x800404F8: bctrl
+    ctx->lr = 0x800404FCu; CALL_INDIRECT(ctx->ctr, ctx, mem); // bctrl
+    // 0x800404FC: mr
+    ctx->r[31] = ctx->r[3] | ctx->r[3];
+    // 0x80040500: bl
+    ctx->lr = 0x80040504u; func_802413BC(ctx, mem); // bl
+    // 0x80040504: mr
+    ctx->r[3] = ctx->r[31] | ctx->r[31];
+    // 0x80040508: lwz
+    ctx->r[31] = MEM_READ32(ctx->r[1] + 12);
+    // 0x8004050C: lwz
+    ctx->r[30] = MEM_READ32(ctx->r[1] + 8);
+    // 0x80040510: lwz
+    ctx->r[0] = MEM_READ32(ctx->r[1] + 20);
+    // 0x80040514: mtspr
+    ctx->lr = ctx->r[0];
+    // 0x80040518: addi
+    ctx->r[1] = (int32_t)ctx->r[1] + 16;
+    // 0x8004051C: blr
+    return; // blr
+}
