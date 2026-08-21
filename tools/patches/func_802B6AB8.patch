@@ -1,4 +1,4 @@
-# addr=0x802B6AB8 name=func_802B6AB8 from=recomp_0064.cpp
+# addr=0x802B6AB8 name=func_802B6AB8 from=recomp_0055.cpp
 // ---- func_802B6AB8 @ 0x802B6AB8 ----
 // PATCHED: Delegate to JKR mount system's findVolume handler.
 void func_802B6AB8(PPCContext* ctx, Memory* mem) {

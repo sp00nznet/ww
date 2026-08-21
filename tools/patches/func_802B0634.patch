@@ -1,4 +1,4 @@
-# addr=0x802B0634 name=func_802B0634 from=recomp_0063.cpp
+# addr=0x802B0634 name=func_802B0634 from=recomp_0054.cpp
 // ---- func_802B0634 @ 0x802B0634 ----
 void func_802B0634(PPCContext* ctx, Memory* mem) {
     // PATCHED: Return early if object pointer is NULL (graphics buffers not initialized

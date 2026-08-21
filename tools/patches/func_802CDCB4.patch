@@ -1,4 +1,4 @@
-# addr=0x802CDCB4 name=func_802CDCB4 from=recomp_0067.cpp
+# addr=0x802CDCB4 name=func_802CDCB4 from=recomp_0058.cpp
 // ---- func_802CDCB4 @ 0x802CDCB4 ----
 // PATCHED: Camera matrix update → loads GX position matrix via GX FIFO.
 // GX FIFO writes to 0xCC008000 which is not emulated. No-op since D3D11

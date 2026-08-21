@@ -1,4 +1,4 @@
-# addr=0x80324688 name=func_80324688 from=recomp_0080.cpp
+# addr=0x80324688 name=func_80324688 from=recomp_0070.cpp
 // ---- func_80324688 @ 0x80324688 ----
 void func_80324688(PPCContext* ctx, Memory* mem) {
 label_80324688:
