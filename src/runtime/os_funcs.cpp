@@ -887,12 +887,12 @@ static const OSFuncEntry g_os_func_table[] = {
 };
 
 void register_os_functions() {
-    // These bind by NAME, and nothing binds them. lookup_os_func() is the
-    // hook that would, and it has no callers; no symbol map is loaded at
-    // runtime and none ships with the project. So every entry below is
-    // currently unreachable and the game runs its own OS code end to end --
-    // its real scheduler, its real thread queues, its real mutexes, with no
-    // interrupt or timer underneath to make any of it progress.
+    // These bind by NAME. bind_os_hle_from_symbol_map() in the launcher does
+    // the binding, and only if a Dolphin symbol map is available; none ships
+    // with the project. Without one every entry below is unreachable and the
+    // game runs its own OS end to end -- its real scheduler, its real thread
+    // queues, its real mutexes, with no interrupt or timer underneath to make
+    // any of it progress.
     //
     // Say so plainly. This used to print "N OS functions registered", which
     // reads as a working HLE layer and sent at least one debugging session
@@ -901,9 +901,10 @@ void register_os_functions() {
     for (const auto* entry = g_os_func_table; entry->name != nullptr; entry++)
         count++;
 
-    printf("[OS] %d OS replacements defined but NOT BOUND: they resolve by name\n"
-           "[OS]   and no symbol map is loaded. The game is running its own OS.\n"
-           "[OS]   Load a symbol map (recompiler --map) to activate them.\n",
+    printf("[OS] %d OS replacements defined. They resolve by name, so they\n"
+           "[OS]   do nothing until a symbol map is loaded -- see\n"
+           "[OS]   bind_os_hle_from_symbol_map(). Without one the game runs\n"
+           "[OS]   its own OS, with no interrupt or timer underneath it.\n",
            count);
 }
 

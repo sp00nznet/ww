@@ -11,6 +11,7 @@
 
 #include "ww/runtime.h"
 #include "gcrecomp/dol.h"
+#include "gcrecomp/symbol_map.h"
 #include "ww/gx/gx.h"
 #include "ww/audio/audio.h"
 #include "ww/input/input.h"
@@ -932,6 +933,48 @@ static void render_j3d_model(const j3d::J3DModel& model,
     }
 }
 
+// Bind the OS HLE replacements to addresses.
+//
+// os_funcs.cpp defines 61 replacements keyed by name -- OSSleepThread,
+// OSResumeThread, the mutexes -- and nothing has ever bound them, so the
+// game has been running its own OS with no interrupt or timer underneath.
+// A Dolphin symbol map supplies the missing half: name -> address.
+//
+// Generate one with Dolphin: boot the game, Symbols > Generate symbols from
+// > Signature Database, then Save Symbol Map. Point WW_SYMBOL_MAP at it, or
+// drop it next to the executable as GZLE01.map.
+//
+// Must run after register_recompiled_functions() so the replacements win.
+static void bind_os_hle_from_symbol_map() {
+    const char* path = std::getenv("WW_SYMBOL_MAP");
+    std::string chosen = path ? path : "GZLE01.map";
+    if (!path) {
+        FILE* probe = fopen(chosen.c_str(), "r");
+        if (!probe) {
+            printf("[OS] No symbol map (set WW_SYMBOL_MAP, or drop "
+                   "GZLE01.map here); OS replacements stay unbound.\n");
+            return;
+        }
+        fclose(probe);
+    }
+
+    gcrecomp::SymbolMap map;
+    if (!map.load_dolphin_map(chosen)) return;
+
+    int bound = 0;
+    for (const auto& [addr, sym] : map.symbols) {
+        RecompiledFunc fn = ww::lookup_os_func(sym.name.c_str());
+        if (!fn) continue;
+        g_func_table.register_func(addr, fn);
+        if (bound < 12) {
+            printf("[OS]   bound %-28s -> 0x%08X\n", sym.name.c_str(), addr);
+        }
+        bound++;
+    }
+    printf("[OS] Bound %d OS replacement(s) from %zu symbols in %s\n",
+           bound, map.size(), chosen.c_str());
+}
+
 int main(int argc, char** argv) {
     // Force unbuffered stdout/stderr so output isn't lost when redirected
     setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1169,6 +1212,9 @@ int main(int argc, char** argv) {
     // ---- Register Recompiled Functions ----
     printf("[*] Registering recompiled functions...\n");
     register_recompiled_functions(g_func_table);
+
+    // After the recompiled functions, so HLE replacements override them.
+    bind_os_hle_from_symbol_map();
 
     // Register REL modules. Each rel_<name>_register call adds the REL's
     // functions to the func table at their virtual addresses.
