@@ -887,16 +887,24 @@ static const OSFuncEntry g_os_func_table[] = {
 };
 
 void register_os_functions() {
-    printf("[OS] Registering OS function replacements...\n");
-
+    // These bind by NAME, and nothing binds them. lookup_os_func() is the
+    // hook that would, and it has no callers; no symbol map is loaded at
+    // runtime and none ships with the project. So every entry below is
+    // currently unreachable and the game runs its own OS code end to end --
+    // its real scheduler, its real thread queues, its real mutexes, with no
+    // interrupt or timer underneath to make any of it progress.
+    //
+    // Say so plainly. This used to print "N OS functions registered", which
+    // reads as a working HLE layer and sent at least one debugging session
+    // hunting for bugs in code that never executes.
     int count = 0;
-    for (const auto* entry = g_os_func_table; entry->name != nullptr; entry++) {
-        // Functions will be bound to addresses when the symbol map is loaded.
-        // For now, register by name in a name->func lookup that the loader uses.
+    for (const auto* entry = g_os_func_table; entry->name != nullptr; entry++)
         count++;
-    }
 
-    printf("[OS] %d OS functions registered (will bind to addresses via symbol map)\n", count);
+    printf("[OS] %d OS replacements defined but NOT BOUND: they resolve by name\n"
+           "[OS]   and no symbol map is loaded. The game is running its own OS.\n"
+           "[OS]   Load a symbol map (recompiler --map) to activate them.\n",
+           count);
 }
 
 // Lookup OS function by name (called during symbol map loading)
